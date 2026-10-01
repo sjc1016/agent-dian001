@@ -213,14 +213,24 @@
 
 ## 总验收 Checklist（对应 PRD 第 8 节）
 
+> 2026-10-01 已通过 [scripts/acceptance_check.py](./scripts/acceptance_check.py) 对运行中服务（真实 LLM + 本地模型）逐项实测，**8/8 全部通过**。复现命令：先 `uv run uvicorn mokioclaw.api.main:app` 起服务，再 `uv run python scripts/acceptance_check.py`。
+
 - [x] 1. 四类业务（余额、套餐、故障、办理）多轮对话端到端走通，意图分流正确
+  - 实测：余额 `query_balance` ✓；套餐 `rag_query` ✓；故障两轮剧本（先追问地址→补地址后 `report_fault` 建单）✓；办理 `change_package` 确认卡片 ✓
 - [x] 2. 模糊意图追问 ≤5 轮后兜底；无关请求直接兜底
+  - 实测：连续模糊输入 2 轮澄清后第 3 轮自动兜底；`写首诗` 判 `irrelevant` 直接兜底
 - [x] 3. RAG 答案附来源片段，父子分片回溯生效
+  - 实测：子图事件链完整（并行双路召回→融合→精排→证据门→父分片回溯 3 片→带来源编号生成）
 - [x] 4. Agent 链路有完整"思考→调用工具→反思校验"轨迹
+  - 实测：`agent_thinking → skill_call → skill_result → agent_reflect(pass) → agent_answer`
 - [x] 5. Skill 热插拔：运行中增删工具目录，不重启即生效
+  - 实测：`POST /api/v1/skills` 热注册成功 → 列表可见 → `DELETE` 热卸载成功，全程未重启
 - [x] 6. 指代消解：多轮指代问题被正确重写并路由
+  - 实测：`它的月费是多少` 重写为「5G畅享199元档套餐的月费是多少」；`帮我办这个` 路由 agent_service，槽位自动带出 `target_package=5G畅享199元档` 并推确认卡片
 - [x] 7. 评测流水线一键运行，自动输出含规则校验 + LLM-Judge 的报告
+  - 实测：`POST /api/v1/eval/run` → 报告 `eval-20261001-155524`（30 条样本，规则校验通过率 76.7%，LLM-Judge 均分 4.19/5：答案质量 3.73 / 推理逻辑 4.07 / 话术合规 4.77）
 - [x] 8. `uv run pytest -q` 全绿
+  - 实测：233 passed in 83.57s
 
 ---
 
