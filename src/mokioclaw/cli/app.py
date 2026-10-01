@@ -10,8 +10,8 @@ from rich.panel import Panel
 from typer.core import TyperGroup
 
 from mokioclaw.cli.formatter import print_event, safe_echo, safe_secho
+from mokioclaw.cli.sse_client import DEFAULT_API_URL, stream_chat_events
 from mokioclaw.core.approval import ApprovalDecision, ApprovalRequest
-from mokioclaw.core.agent import stream_agent_events
 
 
 class MokioClawGroup(TyperGroup):
@@ -45,7 +45,7 @@ class MokioClawGroup(TyperGroup):
 
 app = typer.Typer(
     cls=MokioClawGroup,
-    help='mokioclaw: a teaching-first mini CodeAgent. Use `mokioclaw "task"` for Rich output or `mokioclaw tui` for Textual TUI.',
+    help='mokioclaw: 电信客服智能体演示客户端。使用 `mokioclaw "问题"` 经 HTTP/SSE 调用后端服务，或 `mokioclaw tui` 打开 Textual 界面。',
 )
 
 
@@ -61,27 +61,31 @@ def main(
     ctx: typer.Context,
     workspace: Annotated[
         Path | None,
-        typer.Option("--workspace", "-w", help="Workspace for generated files. Defaults to a fresh .mokioclaw/workspaces/workspace-* directory."),
+        typer.Option("--workspace", "-w", help="会话工作区路径。默认为服务端自动分配。"),
     ] = None,
     max_attempts: Annotated[
         int,
-        typer.Option("--max-attempts", help="Maximum planner/actor/verifier attempts before finalizing."),
+        typer.Option("--max-attempts", help="最大重试次数。"),
     ] = 3,
+    api_url: Annotated[
+        str,
+        typer.Option("--api-url", help="FastAPI 服务地址，默认 http://127.0.0.1:8000。"),
+    ] = DEFAULT_API_URL,
     approval_mode: Annotated[
         Literal["inline", "auto", "deny"],
-        typer.Option("--approval-mode", help="Human approval mode for high-risk BashTool commands: inline, auto, or deny."),
+        typer.Option("--approval-mode", help="（兼容旧选项，阶段 1 审批交互暂屏蔽）"),
     ] = "inline",
     checkpoint_mode: Annotated[
         Literal["light", "strict", "off"],
-        typer.Option("--checkpoint-mode", help="Checkpoint mode: light, strict, or off."),
+        typer.Option("--checkpoint-mode", help="（兼容旧选项，由服务端控制）"),
     ] = "light",
     trace_mode: Annotated[
         Literal["on", "off"],
-        typer.Option("--trace-mode", help="Trace logging mode: on or off."),
+        typer.Option("--trace-mode", help="（兼容旧选项，由服务端控制）"),
     ] = "on",
     resume: Annotated[
         Path | None,
-        typer.Option("--resume", help="Resume from an existing MokioClaw workspace."),
+        typer.Option("--resume", help="（兼容旧选项，阶段 1 暂未接入服务端恢复）"),
     ] = None,
 ) -> None:
     if ctx.invoked_subcommand is not None:
@@ -94,47 +98,51 @@ def main(
         safe_echo(ctx.get_help())
         raise typer.Exit()
 
-    safe_secho("mokioclaw stage 5: MultiAgent + context/harness engineering", fg=typer.colors.MAGENTA)
-    approval_handler = _inline_approval_handler if approval_mode == "inline" else None
-    for event in stream_agent_events(
-        task,
-        workspace=workspace,
-        max_attempts=max_attempts,
-        approval_mode=approval_mode,
-        approval_handler=approval_handler,
-        checkpoint_mode=checkpoint_mode,
-        resume_workspace=resume,
-        trace_mode=trace_mode,
-    ):
-        print_event(event)
+    safe_secho("电信客服智能体 · 阶段 1 FastAPI 服务化", fg=typer.colors.MAGENTA)
+    try:
+        for event in stream_chat_events(
+            task or "",
+            api_url=api_url,
+            workspace=str(workspace) if workspace is not None else None,
+            max_attempts=max_attempts,
+        ):
+            print_event(event)
+    except Exception as exc:
+        safe_secho(f"无法连接后端服务 {api_url}：{type(exc).__name__}: {exc}", fg=typer.colors.RED)
+        safe_echo("请先启动服务：uvicorn mokioclaw.api.main:app")
+        raise typer.Exit(code=1)
 
 
 @app.command("tui")
 def tui(
-    task: Annotated[str | None, typer.Argument(help="Optional initial task for the Textual TUI.")] = None,
+    task: Annotated[str | None, typer.Argument(help="可选的初始问题。")] = None,
     workspace: Annotated[
         Path | None,
-        typer.Option("--workspace", "-w", help="Workspace for the persistent TUI coding session."),
+        typer.Option("--workspace", "-w", help="会话工作区路径。"),
     ] = None,
     max_attempts: Annotated[
         int,
-        typer.Option("--max-attempts", help="Maximum planner/actor/verifier attempts before finalizing."),
+        typer.Option("--max-attempts", help="最大重试次数。"),
     ] = 3,
+    api_url: Annotated[
+        str,
+        typer.Option("--api-url", help="FastAPI 服务地址，默认 http://127.0.0.1:8000。"),
+    ] = DEFAULT_API_URL,
     approval_mode: Annotated[
         Literal["inline", "auto", "deny"],
-        typer.Option("--approval-mode", help="Human approval mode for high-risk BashTool commands: inline, auto, or deny."),
+        typer.Option("--approval-mode", help="（兼容旧选项，阶段 1 审批交互暂屏蔽）"),
     ] = "inline",
     checkpoint_mode: Annotated[
         Literal["light", "strict", "off"],
-        typer.Option("--checkpoint-mode", help="Checkpoint mode: light, strict, or off."),
+        typer.Option("--checkpoint-mode", help="（兼容旧选项，由服务端控制）"),
     ] = "light",
     trace_mode: Annotated[
         Literal["on", "off"],
-        typer.Option("--trace-mode", help="Trace logging mode: on or off."),
+        typer.Option("--trace-mode", help="（兼容旧选项，由服务端控制）"),
     ] = "on",
     resume: Annotated[
         Path | None,
-        typer.Option("--resume", help="Resume from an existing MokioClaw workspace."),
+        typer.Option("--resume", help="（兼容旧选项，阶段 1 暂未接入服务端恢复）"),
     ] = None,
 ) -> None:
     """Open the Textual terminal interface."""
@@ -145,6 +153,7 @@ def tui(
         initial_task=task,
         workspace=workspace,
         max_attempts=max_attempts,
+        api_url=api_url,
         approval_mode=approval_mode,
         checkpoint_mode=checkpoint_mode,
         trace_mode=trace_mode,

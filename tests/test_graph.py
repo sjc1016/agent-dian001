@@ -9,17 +9,20 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 from mokioclaw.core.state import RuntimeState
 from mokioclaw.graph.memory import build_layered_memory, persist_history_summary, read_history_summary
 from mokioclaw.graph.nodes import (
-    chat_responder_node,
+    agent_loop_node,
+    clarify_node,
     context_compressor_node,
     context_compressor_route,
     context_monitor_node,
     context_monitor_route,
     estimate_context_tokens,
+    fallback_node,
     final_node,
     get_context_token_limit,
     intent_route_fn,
     intent_router_node,
     planner_node,
+    rag_answer_node,
     verifier_node,
     verifier_route,
 )
@@ -106,58 +109,203 @@ def test_workflow_compiles_without_fixed_actor_node() -> None:
     assert workflow is not None
 
 
-def test_intent_router_routes_chat_with_model_json(monkeypatch) -> None:
+def test_intent_router_routes_rag_query_with_model_json(monkeypatch) -> None:
     class FakeModel:
         def invoke(self, messages):
-            return AIMessage(content='{"route":"chat","reason":"greeting","confidence":0.92}')
+            return AIMessage(content='{"category":"rag_query","confidence":0.9,"reason":"资费咨询","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "你好"})
+    result = intent_router_node({"task": "5G 融合套餐每月多少钱", "clarify_count": 3, "unknown_count": 2})
 
-    assert result["intent_route"] == "chat"
-    assert result["intent_reason"] == "greeting"
-    assert result["intent_confidence"] == 0.92
-    assert intent_route_fn(result) == "chat_responder"
+    assert result["intent_category"] == "rag_query"
+    assert result["intent_route"] == "rag_answer"
+    assert result["intent_confidence"] == 0.9
+    # 明确业务后跨轮计数清零（连续语义）
+    assert result["clarify_count"] == 0
+    assert result["unknown_count"] == 0
+    assert intent_route_fn(result) == "rag_answer"
 
 
-def test_intent_router_routes_workflow_with_model_json(monkeypatch) -> None:
+def test_intent_router_routes_agent_service_with_model_json(monkeypatch) -> None:
     class FakeModel:
         def invoke(self, messages):
-            return AIMessage(content='{"route":"workflow","reason":"needs files","confidence":0.88}')
+            return AIMessage(content='{"category":"agent_service","confidence":0.85,"reason":"办理诉求","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "帮我创建一个 HTML 页面"})
+    result = intent_router_node({"task": "帮我开通国际漫游"})
 
-    assert result["intent_route"] == "workflow"
-    assert intent_route_fn(result) == "planner"
+    assert result["intent_category"] == "agent_service"
+    assert result["intent_route"] == "agent_loop"
+    assert intent_route_fn(result) == "agent_loop"
 
 
-def test_intent_router_invalid_json_defaults_to_workflow(monkeypatch) -> None:
+def test_intent_router_routes_clarify_and_keeps_pending_slots(monkeypatch) -> None:
+    class FakeModel:
+        def invoke(self, messages):
+            return AIMessage(content='{"category":"clarify","confidence":0.7,"reason":"信息不全","missing_slots":[]}')
+
+    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+
+    result = intent_router_node({"task": "帮我办一下那个", "pending_slots": ["号码"], "clarify_count": 1})
+
+    assert result["intent_category"] == "clarify"
+    assert result["intent_route"] == "clarify"
+    # 追问延续：模型未给槽位时沿用旧槽位；轮数由 clarify_node 递增，router 不动
+    assert result["pending_slots"] == ["号码"]
+    assert result["clarify_count"] == 1
+
+
+def test_intent_router_routes_irrelevant_to_fallback(monkeypatch) -> None:
+    class FakeModel:
+        def invoke(self, messages):
+            return AIMessage(content='{"category":"irrelevant","confidence":0.95,"reason":"超出客服范围","missing_slots":[]}')
+
+    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+
+    result = intent_router_node({"task": "帮我写一首诗"})
+
+    assert result["intent_category"] == "irrelevant"
+    assert result["intent_route"] == "fallback"
+    assert result["fallback_reason"] == "irrelevant_request"
+    assert intent_route_fn(result) == "fallback"
+
+
+def test_intent_router_low_confidence_treated_as_unknown(monkeypatch) -> None:
+    class FakeModel:
+        def invoke(self, messages):
+            return AIMessage(content='{"category":"clarify","confidence":0.3,"reason":"拿不准","missing_slots":[]}')
+
+    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+
+    result = intent_router_node({"task": "那个东西怎么样了"})
+
+    assert result["intent_category"] == "unknown"
+    assert "low confidence" in result["intent_reason"]
+    assert result["unknown_count"] == 1
+    assert intent_route_fn(result) == "clarify"
+
+
+def test_intent_router_invalid_json_defaults_to_unknown(monkeypatch) -> None:
     class FakeModel:
         def invoke(self, messages):
             return AIMessage(content="not json")
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "你好"})
+    result = intent_router_node({"task": "嗯嗯"})
 
-    assert result["intent_route"] == "workflow"
-    assert intent_route_fn(result) == "planner"
+    assert result["intent_category"] == "unknown"
+    assert result["unknown_count"] == 1
+    assert intent_route_fn(result) == "clarify"
 
 
-def test_chat_responder_node_returns_chat_response(monkeypatch) -> None:
+def test_intent_router_unknown_streak_forces_fallback(monkeypatch) -> None:
     class FakeModel:
         def invoke(self, messages):
-            return AIMessage(content="你好，我在。")
+            return AIMessage(content='{"category":"unknown","confidence":0.2,"reason":"无法判断","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = chat_responder_node({"task": "你好", "intent_reason": "greeting"})
+    result = intent_router_node({"task": "？？", "unknown_count": 1})
 
-    assert result["chat_response"] == "你好，我在。"
-    assert result["final_answer"] == "你好，我在。"
+    assert result["intent_route"] == "fallback"
+    assert result["fallback_reason"] == "unknown_streak"
+    assert intent_route_fn(result) == "fallback"
+
+
+def test_intent_router_clarify_exceeded_forces_fallback(monkeypatch) -> None:
+    class FakeModel:
+        def invoke(self, messages):
+            return AIMessage(content='{"category":"clarify","confidence":0.7,"reason":"仍不明确","missing_slots":[]}')
+
+    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+
+    result = intent_router_node({"task": "还是那个事", "clarify_count": 5})
+
+    assert result["intent_route"] == "fallback"
+    assert result["fallback_reason"] == "clarify_exceeded"
+    assert intent_route_fn(result) == "fallback"
+
+
+def test_clarify_node_asks_question_and_increments_count(monkeypatch) -> None:
+    class FakeModel:
+        def invoke(self, messages):
+            return AIMessage(content="请问您想查询话费还是办理套餐呢？")
+
+    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+
+    result = clarify_node({"task": "帮我办一下", "clarify_count": 2, "pending_slots": ["号码"]})
+
+    assert result["clarify_count"] == 3
+    assert result["clarify_question"] == "请问您想查询话费还是办理套餐呢？"
+    assert result["final_answer"] == result["clarify_question"]
+
+
+def test_clarify_node_uses_default_question_when_model_fails(monkeypatch) -> None:
+    class FakeModel:
+        def invoke(self, messages):
+            raise RuntimeError("llm down")
+
+    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+
+    result = clarify_node({"task": "那个", "clarify_count": 0})
+
+    assert result["clarify_count"] == 1
+    assert result["final_answer"]
+
+
+def test_fallback_node_replies_with_template() -> None:
+    result = fallback_node({"task": "写首诗", "fallback_reason": "irrelevant_request"})
+
+    assert result["fallback_reason"] == "irrelevant_request"
+    assert result["chat_response"] == result["final_answer"]
+    assert result["final_answer"]
+
+
+def test_fallback_node_infers_reason_from_counts() -> None:
+    result = fallback_node({"task": "嗯", "clarify_count": 5})
+
+    assert result["fallback_reason"] == "clarify_exceeded"
+    assert result["final_answer"]
+
+
+def test_rag_answer_node_drives_rag_subgraph(monkeypatch) -> None:
+    """P3-21：rag_answer 不再是占位话术，而是在节点内驱动 RAG 子图。"""
+
+    async def empty_search(query, top_k):
+        return []
+
+    async def empty_rerank(query, hits):
+        return []
+
+    async def empty_parents(ordered_ids):
+        return []
+
+    class FakeRagModel:
+        def invoke(self, messages):
+            return AIMessage(content="规范的检索问句")
+
+    monkeypatch.setattr("mokioclaw.rag.nodes.bm25_search", empty_search)
+    monkeypatch.setattr("mokioclaw.rag.nodes.dense_search", empty_search)
+    monkeypatch.setattr("mokioclaw.rag.nodes.rerank_hits", empty_rerank)
+    monkeypatch.setattr("mokioclaw.rag.nodes.build_parent_evidence", empty_parents)
+    monkeypatch.setattr("mokioclaw.rag.nodes.create_model", lambda: FakeRagModel())
+
+    result = rag_answer_node({"task": "今天天气怎么样"})
+
+    assert result["chat_response"] == result["final_answer"]
+    # 两路召回均空、重写一次后仍无证据 → 子图兜底原因透传到主图 metadata
+    assert result["final_answer"]
+    assert result["metadata"]["rag_fallback_reason"] == "rag_no_evidence"
+
+
+def test_agent_loop_node_replies_with_placeholder() -> None:
+    result = agent_loop_node({"task": "停机保号"})
+
+    assert "转人工预处理中" in result["final_answer"]
+    assert result["chat_response"] == result["final_answer"]
 
 
 def test_context_token_limit_defaults_and_env(monkeypatch) -> None:

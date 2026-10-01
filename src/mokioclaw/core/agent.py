@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+import threading
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, AsyncIterator, Iterator
 
 from dotenv import load_dotenv
 from langgraph.graph import add_messages
@@ -73,7 +76,8 @@ def stream_agent_events(
             else:
                 _merge_graph_update(entry_state, event)
                 yield {"type": "graph_event", "event": event}
-        if route == "chat":
+        if route != "workflow":
+            # 阶段 2：五类意图均在入口图内完成（含占位分支），不再进入 complex 工作流
             return
 
     selected_workspace = resume_path or workspace
@@ -183,6 +187,10 @@ def stream_session_events(
         "session_id": session.get("session_id", ""),
         "session_turn": turn,
         "session_context": session_context,
+        # 阶段 2：跨轮对话管控计数与待确认槽位（由会话持久化注入）
+        "clarify_count": int(session.get("clarify_count", 0) or 0),
+        "unknown_count": int(session.get("unknown_count", 0) or 0),
+        "pending_slots": list(session.get("pending_slots", []) or []),
     }
     for mode, event in build_entry_workflow().stream(entry_state, stream_mode=["updates", "custom"]):
         if mode == "custom":
@@ -193,11 +201,15 @@ def stream_session_events(
             _merge_graph_update(entry_state, event)
             yield {"type": "graph_event", "event": event}
 
-    if route == "chat":
-        response = str(entry_state.get("chat_response") or entry_state.get("final_answer") or "")
-        append_assistant_turn(session, turn=turn, route="chat", content=response, summary=response)
+    if route != "workflow":
+        # 阶段 2：五类意图（rag 占位/agent 占位/追问澄清/兜底）全部在入口图内完成
+        response = str(entry_state.get("final_answer") or entry_state.get("chat_response") or "")
+        session["clarify_count"] = int(entry_state.get("clarify_count", 0) or 0)
+        session["unknown_count"] = int(entry_state.get("unknown_count", 0) or 0)
+        session["pending_slots"] = list(entry_state.get("pending_slots", []) or [])
+        append_assistant_turn(session, turn=turn, route=route, content=response, summary=response)
         save_session(workspace, session)
-        yield {"type": "custom_event", "event": session_turn_saved_event(workspace, session, turn=turn, route="chat")}
+        yield {"type": "custom_event", "event": session_turn_saved_event(workspace, session, turn=turn, route=route)}
         return
 
     workflow_events = _stream_complex_workflow(
@@ -377,3 +389,72 @@ def _final_answer_from_event(event: dict[str, Any]) -> str:
     if not isinstance(update, dict):
         return ""
     return str(update.get("final_answer") or "")
+
+
+# ---------------------------------------------------------------------------
+# 阶段 1：异步包装 + SSE 格式转换
+#
+# graph 内部的 LLM 调用与工具调用目前仍是同步的（阶段 4 会改为原生 async）。
+# 本阶段通过把同步生成器放到工作线程中执行（asyncio.to_thread 等价实现），
+# 避免阻塞 FastAPI 的事件循环；事件通过 asyncio.Queue 跨线程传递，
+# 由异步生成器逐条 yield，再由 SSE 接口推送给客户端。
+# ---------------------------------------------------------------------------
+
+
+_SENTINEL = object()
+
+
+async def stream_session_events_async(
+    task: str | None = None,
+    *,
+    session_workspace: Path | None = None,
+    max_attempts: int = 3,
+    approval_mode: str = "inline",
+    approval_handler=None,
+    checkpoint_mode: str | None = None,
+    resume_workspace: Path | None = None,
+    trace_mode: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """``stream_session_events`` 的异步版本。
+
+    同步生成器在工作线程中运行，事件通过队列桥接到异步生成器。
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+
+    def _producer() -> None:
+        try:
+            for event in stream_session_events(
+                task,
+                session_workspace=session_workspace,
+                max_attempts=max_attempts,
+                approval_mode=approval_mode,
+                approval_handler=approval_handler,
+                checkpoint_mode=checkpoint_mode,
+                resume_workspace=resume_workspace,
+                trace_mode=trace_mode,
+            ):
+                loop.call_soon_threadsafe(queue.put_nowait, event)
+        except Exception as exc:  # noqa: BLE001
+            loop.call_soon_threadsafe(queue.put_nowait, exc)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
+
+    thread = threading.Thread(target=_producer, daemon=True)
+    thread.start()
+
+    try:
+        while True:
+            item = await queue.get()
+            if item is _SENTINEL:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+    finally:
+        thread.join(timeout=1)
+
+
+def event_to_sse(event: dict[str, Any]) -> str:
+    """将事件字典转换为 SSE ``data:`` 帧。"""
+    return f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"

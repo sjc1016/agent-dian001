@@ -8,9 +8,9 @@
 | 阶段 | 主题 | 任务数 | 状态 |
 | --- | --- | --- | --- |
 | 阶段 0 | 基础设施与领域瘦身 | 12 | ✅ 完成 |
-| 阶段 1 | FastAPI 服务化改造 | 9 | ⬜ 未开始 |
-| 阶段 2 | 意图识别与任务调度 | 10 | ⬜ 未开始 |
-| 阶段 3 | RAG 检索子图（LangGraph） | 22 | ⬜ 未开始 |
+| 阶段 1 | FastAPI 服务化改造 | 9 | ✅ 完成 |
+| 阶段 2 | 意图识别与任务调度 | 10 | ✅ 完成 |
+| 阶段 3 | RAG 检索子图（LangGraph） | 22 | ✅ 完成（5 条验收门过 4 条，P95 见下方实测） |
 | 阶段 4 | Skill 工具集 + Agent 推理引擎 | 16 | ⬜ 未开始 |
 | 阶段 5 | 多轮记忆与查询重写 | 9 | ⬜ 未开始 |
 | 阶段 6 | 自动化评测流水线 | 8 | ⬜ 未开始 |
@@ -49,20 +49,20 @@
 
 **目标**：graph 逻辑不动，先包成 HTTP/SSE 服务；CLI/TUI 改为 HTTP 客户端。
 
-- [ ] **P1-1** 新建 `api/main.py`：FastAPI app、生命周期事件（建库、模型预热占位）、健康检查 `/health`
-- [ ] **P1-2** 新建 `api/routes/chat.py`：`POST /api/v1/chat`，SSE（text/event-stream）流式返回
-- [ ] **P1-3** 新建 `api/deps.py`：依赖注入（DB session、graph 实例、配置）
-- [ ] **P1-4** 把 [core/agent.py](./src/mokioclaw/core/agent.py) 的 `stream_session_events()` 包成 async 生成器，事件转 SSE 格式
-- [ ] **P1-5** 过渡期用 `asyncio.to_thread` 包裹同步 LLM/工具调用（阶段 4 移除）
-- [ ] **P1-6** 建 SQLite `session` 表模型（session_id、轮次、当前意图、待确认槽位、消息 JSON、创建/更新时间）
-- [ ] **P1-7** 改造 [core/session.py](./src/mokioclaw/core/session.py)：load/save 从 session.json 切到 SQLite，接口签名不变
-- [ ] **P1-8** 改造 [cli/app.py](./src/mokioclaw/cli/app.py)：改为 HTTP/SSE 客户端请求 `/chat`
-- [ ] **P1-9** 改造 TUI（cli/tui/）：SSE 流式渲染，审批交互改为后续确认消息（本阶段可先屏蔽）
+- [x] **P1-1** 新建 `api/main.py`：FastAPI app、生命周期事件（建库、模型预热占位）、健康检查 `/health`
+- [x] **P1-2** 新建 `api/routes/chat.py`：`POST /api/v1/chat`，SSE（text/event-stream）流式返回
+- [x] **P1-3** 新建 `api/deps.py`：依赖注入（DB session、graph 实例、配置）
+- [x] **P1-4** 把 [core/agent.py](./src/mokioclaw/core/agent.py) 的 `stream_session_events()` 包成 async 生成器，事件转 SSE 格式
+- [x] **P1-5** 过渡期用 `asyncio.to_thread` 包裹同步 LLM/工具调用（阶段 4 移除）
+- [x] **P1-6** 建 SQLite `session` 表模型（session_id、轮次、当前意图、待确认槽位、消息 JSON、创建/更新时间）
+- [x] **P1-7** 改造 [core/session.py](./src/mokioclaw/core/session.py)：load/save 从 session.json 切到 SQLite，接口签名不变
+- [x] **P1-8** 改造 [cli/app.py](./src/mokioclaw/cli/app.py)：改为 HTTP/SSE 客户端请求 `/chat`
+- [x] **P1-9** 改造 TUI（cli/tui/）：SSE 流式渲染，审批交互改为后续确认消息（本阶段可先屏蔽）
 
 **🚪 阶段 1 验收门**
-- [ ] `uvicorn mokioclaw.api.main:app` 启动成功
-- [ ] `mokioclaw "你好"` 经 HTTP 拿到流式回复
-- [ ] 重启服务后历史会话不丢失（SQLite 持久化验证）
+- [x] `uvicorn mokioclaw.api.main:app` 启动成功
+- [x] `mokioclaw "你好"` 经 HTTP 拿到流式回复
+- [x] 重启服务后历史会话不丢失（SQLite 持久化验证）
 
 ---
 
@@ -70,21 +70,21 @@
 
 **目标**：五路意图判定 + 追问澄清（≤5 轮）+ 兜底，用占位引擎先跑通对话管控。
 
-- [ ] **P2-1** 扩展 [graph/state.py](./src/mokioclaw/graph/state.py)：`intent_category`、`clarify_count`、`pending_slots`、`fallback_reason`、`unknown_count`
-- [ ] **P2-2** 写意图识别 prompt：四类业务定义 + 正/反例，输出结构化 JSON（类别、置信度、理由、待补槽位）
-- [ ] **P2-3** 改造 `intent_router_node`：输出 rag_query / agent_service / clarify / irrelevant / unknown 五类
-- [ ] **P2-4** 新增 `clarify_node`：按 pending_slots 生成追问话术，`clarify_count += 1`
-- [ ] **P2-5** 新增 `fallback_node`：兜底话术（说明服务边界 + 引导回四类业务），记录 fallback_reason
-- [ ] **P2-6** 强制兜底逻辑：`clarify_count >= 5` 或连续 unknown 达阈值 → 直接路由 fallback
-- [ ] **P2-7** 重排 [graph/workflow.py](./src/mokioclaw/graph/workflow.py)：intent_router 条件边 → rag_answer / agent_loop / clarify / fallback
-- [ ] **P2-8** `rag_answer` 占位节点：回复"知识库建设中"
-- [ ] **P2-9** `agent_loop` 占位节点：回复"转人工预处理中"
-- [ ] **P2-10** 编写 10 条意图测试输入（五类各覆盖，含模糊与无关）
+- [x] **P2-1** 扩展 [graph/state.py](./src/mokioclaw/graph/state.py)：`intent_category`、`clarify_count`、`pending_slots`、`fallback_reason`、`unknown_count`
+- [x] **P2-2** 写意图识别 prompt：四类业务定义 + 正/反例，输出结构化 JSON（类别、置信度、理由、待补槽位）
+- [x] **P2-3** 改造 `intent_router_node`：输出 rag_query / agent_service / clarify / irrelevant / unknown 五类
+- [x] **P2-4** 新增 `clarify_node`：按 pending_slots 生成追问话术，`clarify_count += 1`
+- [x] **P2-5** 新增 `fallback_node`：兜底话术（说明服务边界 + 引导回四类业务），记录 fallback_reason
+- [x] **P2-6** 强制兜底逻辑：`clarify_count >= 5` 或连续 unknown 达阈值 → 直接路由 fallback
+- [x] **P2-7** 重排 [graph/workflow.py](./src/mokioclaw/graph/workflow.py)：intent_router 条件边 → rag_answer / agent_loop / clarify / fallback
+- [x] **P2-8** `rag_answer` 占位节点：回复"知识库建设中"
+- [x] **P2-9** `agent_loop` 占位节点：回复"转人工预处理中"
+- [x] **P2-10** 编写 10 条意图测试输入（五类各覆盖，含模糊与无关）
 
 **🚪 阶段 2 验收门**
-- [ ] 10 条测试输入分流全部正确
-- [ ] 模糊输入连续追问第 5 轮后自动兜底
-- [ ] 无关请求（如"写首诗"）直接兜底
+- [x] 10 条测试输入分流全部正确
+- [x] 模糊输入连续追问第 5 轮后自动兜底
+- [x] 无关请求（如"写首诗"）直接兜底
 
 ---
 
@@ -93,39 +93,39 @@
 **目标**：按 PRD 3.3 节实现 `rag_subgraph`，全流程图节点化，替换阶段 2 占位。
 
 ### 3A 数据与离线入库
-- [ ] **P3-1** 新建 `rag/state.py`：`RagSubState`（query / rewritten_query / bm25_hits / dense_hits / fused_hits / reranked_hits / evidence / answer / sources / rag_attempts）
-- [ ] **P3-2** SQLite 建 `chunk_meta` 表（child_id、parent_id、doc_source、position、child_text）
-- [ ] **P3-3** 建 Milvus collection（child 粒度向量，含 child_id 标量字段）
-- [ ] **P3-4** `rag/parsing.py`：Docling 解析 PDF/Word/HTML 异构文档
-- [ ] **P3-5** 句子边界切分（中文标点/规则分句），生成 Child 细粒度切片（1~3 句）
-- [ ] **P3-6** 生成 Parent 段落块并维护 child→parent 映射
-- [ ] **P3-7** 封装 BGE-M3 embedding 异步接口（懒加载、CPU 推理）
-- [ ] **P3-8** `rag/ingest.py`：向量化入 Milvus Lite + 元信息/父子映射写 SQLite
-- [ ] **P3-9** 实现 `POST /api/v1/knowledge/ingest` 接口
-- [ ] **P3-10** 准备 5~10 份电信知识文档（套餐说明/资费规则/宽带 FAQ）放 `knowledge/` 并完成入库
+- [x] **P3-1** 新建 `rag/state.py`：`RagSubState`（query / rewritten_query / bm25_hits / dense_hits / fused_hits / reranked_hits / evidence / answer / sources / rag_attempts）
+- [x] **P3-2** SQLite 建 `chunk_meta` 表（child_id、parent_id、doc_source、position、child_text）
+- [x] **P3-3** 建 Milvus collection（child 粒度向量，含 child_id 标量字段）
+- [x] **P3-4** `rag/parsing.py`：Docling 解析 PDF/Word/HTML 异构文档
+- [x] **P3-5** 句子边界切分（中文标点/规则分句），生成 Child 细粒度切片（1~3 句）
+- [x] **P3-6** 生成 Parent 段落块并维护 child→parent 映射
+- [x] **P3-7** 封装 BGE-M3 embedding 异步接口（懒加载、CPU 推理）
+- [x] **P3-8** `rag/ingest.py`：向量化入 Milvus Lite + 元信息/父子映射写 SQLite
+- [x] **P3-9** 实现 `POST /api/v1/knowledge/ingest` 接口（另含 `/ingest/upload`、`/stats`）
+- [x] **P3-10** 准备 5~10 份电信知识文档（套餐说明/资费规则/宽带 FAQ）放 `knowledge/` 并完成入库（实际 8 份 md/html/txt，80 个 child）
 
 ### 3B 检索子图节点
-- [ ] **P3-11** `retrieve_bm25` 节点（rank_bm25 关键词召回，async）
-- [ ] **P3-12** `retrieve_dense` 节点（Milvus 稠密语义召回，async）
-- [ ] **P3-13** `rrf_fusion` 节点：等待两路齐备，RRF 融合排序
-- [ ] **P3-14** `rerank` 节点：Cross-Encoder 精排取 Top-K
-- [ ] **P3-15** `evidence_gate` 节点 + 条件路由：有命中 / 空或低置信
-- [ ] **P3-16** `parent_lookup` 节点：回溯父分片 + 前后邻域 child 扩展 + 去重合并
-- [ ] **P3-17** `rewrite_once` 节点：放宽重写 1 次（`rag_attempts` 计数，超限走兜底）
-- [ ] **P3-18** `generate` 节点：四层组装提示词（系统→记忆→证据→问题）生成答案，带来源编号
-- [ ] **P3-19** `rag_fallback` 节点：无证据话术并回传 fallback 原因
+- [x] **P3-11** `retrieve_bm25` 节点（rank_bm25 关键词召回，async）
+- [x] **P3-12** `retrieve_dense` 节点（Milvus 稠密语义召回，async）
+- [x] **P3-13** `rrf_fusion` 节点：等待两路齐备，RRF 融合排序
+- [x] **P3-14** `rerank` 节点：Cross-Encoder 精排取 Top-K
+- [x] **P3-15** `evidence_gate` 节点 + 条件路由：有命中 / 空或低置信
+- [x] **P3-16** `parent_lookup` 节点：回溯父分片 + 前后邻域 child 扩展 + 去重合并
+- [x] **P3-17** `rewrite_once` 节点：放宽重写 1 次（`rag_attempts` 计数，超限走兜底）
+- [x] **P3-18** `generate` 节点：四层组装提示词（系统→记忆→证据→问题）生成答案，带来源编号
+- [x] **P3-19** `rag_fallback` 节点：无证据话术并回传 fallback 原因
 
 ### 3C 组装与接线
-- [ ] **P3-20** `rag/workflow.py` 的 `build_rag_subgraph()`：START 两条出边并行召回 → fusion → rerank → gate 条件边 → parent_lookup → generate / rewrite_once / rag_fallback
-- [ ] **P3-21** 主图 [graph/workflow.py](./src/mokioclaw/graph/workflow.py) 用编译后的子图替换 rag_answer 占位（子图作为 node 挂载，问句进/答案+来源出）
-- [ ] **P3-22** 各节点中间结果（两路命中、融合分、精排分、证据）写入 trace
+- [x] **P3-20** `rag/workflow.py` 的 `build_rag_subgraph()`：START 两条出边并行召回 → fusion → rerank → gate 条件边 → parent_lookup → generate / rewrite_once / rag_fallback
+- [x] **P3-21** 主图 [graph/workflow.py](./src/mokioclaw/graph/workflow.py) 用编译后的子图替换 rag_answer 占位（子图在同步 rag_answer 节点内以 asyncio.run+astream 驱动，问句进/答案+来源出，原因见踩坑记录）
+- [x] **P3-22** 各节点中间结果（两路命中、融合分、精排分、证据）写入 trace（子图 custom 事件经 rag_answer 节点转发，trace 无需改动）
 
 **🚪 阶段 3 验收门**
-- [ ] 20 条业务问题答案命中正确文档片段
-- [ ] 父子回溯后上下文完整、无断句
-- [ ] trace 可见完整子图节点序列与并行召回事件
-- [ ] 知识库外问题走通 `rewrite_once → rag_fallback`
-- [ ] 单轮检索 P95 < 2s（本地模型）
+- [x] 20 条业务问题答案命中正确文档片段（实测 20/20，Top-1 均为期望文档）
+- [x] 父子回溯后上下文完整、无断句（父分片按子句拼接，邻域 child 扩展）
+- [x] trace 可见完整子图节点序列与并行召回事件（rag_retrieve×2 → rag_fusion → rag_rerank → rag_gate → rag_parent_lookup → rag_answer）
+- [x] 知识库外问题走通 `rewrite_once → rag_fallback`（3/3，重写严格限 1 次无死循环）
+- [ ] 单轮检索 P95 < 2s（本地模型）—— 实测热身后中位 2.06s / P95 2.41s（i9 级 CPU、8 候选精排），**未严格达标**；首次冷启动约 32s 已由 API 启动后台预热消除。可调 `RAG_RERANK_INPUT_TOP_N`（6 时约 1.7s 但会丢失弱相关问），或上 GPU/ONNX 量化进一步压缩
 
 ---
 
@@ -242,4 +242,15 @@
 | 2026-10-01 | P0-9 | pymilvus 3.0.2 的 `[milvus-lite]` extra 在 Windows/Python 3.13 不会自动带 milvus-lite，需直接 `uv add milvus-lite`（实测 3.2.1 可用）。本地文件写入→按 id 读回→向量检索均成功。注意：**项目绝对路径含中文**时 faiss 后台持久化 HNSW 索引会打印 "could not open ... for writing" 的非致命报错（不影响写入/读回/检索，纯英文路径下无此告警）；`scripts/verify_milvus_lite.py` 支持用 `MILVUS_DB_PATH` 指向纯英文路径。阶段 3 建正式 collection 时需关注。 |
 | 2026-10-01 | P0-10/11 | hf-mirror 上 bge-m3 的权重文件名是 `pytorch_model.bin`（非 model.safetensors），下载 ignore 规则切勿误排除；reranker 为 `model.safetensors`。镜像长连接传大文件会无数据挂起，`scripts/download_models.py` 采用「并行 Range + 看门狗限时终止 + `.incomplete` 断点续传重试」收敛完成；单连接整体 GET 在该镜像上反而会长时间零字节。 |
 | 2026-10-01 | P0-1 | 已移除不再使用的 `tavily-python`（WebSearch 工具删除，联网检索改由阶段 3 RAG 承担），`.env.example` 同步删 TAVILY_API_KEY、新增 DB_PATH；`data/`、`models/`、`*.db*` 已加入 .gitignore。 |
+| 2026-10-01 | P1-7 | session 从 session.json 迁移到 SQLite 后，`session.py` 的公共函数保持同步签名，但内部通过 `asyncio.run` 调用异步 DB 操作（这些函数运行在工作线程中，无运行中的事件循环）。`workspace` 路径作为 session 表主键，与旧文件路径一一对应。`session_file()` 仍保留但仅作事件元信息展示，不再作为存储来源；`SESSION_SUMMARY.md` 仍写出便于人读。 |
+| 2026-10-01 | P1-2 | SSE 流式接口中，若 graph 内部抛异常（如 LLM 未配置），`StreamingResponse` 会直接断开连接导致客户端 `RemoteProtocolError: peer closed connection`。解决：在 `event_stream()` 生成器内 `try/except`，将异常包装为 `{"type": "error"}` 事件帧 yield 出去，最后再发 `data: [DONE]` 结束标记。 |
+| 2026-10-01 | P1-4 | `stream_session_events` 是同步生成器，不能直接用 `asyncio.to_thread` 逐条 yield。采用「工作线程 + asyncio.Queue」模式：线程内迭代同步生成器，通过 `loop.call_soon_threadsafe(queue.put_nowait, event)` 把事件投递给异步生成器；用 `_SENTINEL` 标记结束，异常也通过队列传递并在异步侧 re-raise。 |
+| 2026-10-01 | P2-10 | 测试替身陷阱：`create_model()` 是工厂，monkeypatch 目标必须是「返回实例」的调用。若把 `_fake_model()` 设计成返回类，`create_model().invoke(...)` 变成未绑定调用，报 `missing 1 required positional argument`，且被 router 的 try/except 吞掉后判为 unknown——症状极具迷惑性（所有意图测试全变 unknown）。直接函数调用能过、编译图内才炸，排查时先看事件里的 `router error` 原文。 |
+| 2026-10-01 | P2-6 | 计数语义决策：`clarify_count` 由 clarify_node 递增（router 只读判定 `>=5` 兜底），`unknown_count` 由 router 递增（连续 `>=2` 兜底）；明确业务（rag_query/agent_service/irrelevant）后两个计数清零（连续语义）。这样"连续追问第 5 轮后自动兜底"在第 6 轮触发 fallback(clarify_exceeded)，与验收门一致。测试里须把 intent_router 的 updates 合并回 state，否则 unknown 连击无法累计。 |
+| 2026-10-01 | P3-20/21 | LangGraph 1.x 关键坑：**同步 `.stream()` 不支持 async 节点**（报 `TypeError: No synchronous function provided`），而主图由同步 stream 驱动。方案：RAG 子图 9 个节点全部 async 并用 `astream` 驱动；主图 rag_answer 保持同步节点，在内部 `asyncio.run()` 起独立事件循环（若外层已有循环则开 daemon 线程）。实测 START 双出边并行（两路召回约 0.2s 而非串行 0.4s）、双入边屏障、rewrite 回环、custom writer 透传均正常。 |
+| 2026-10-01 | P3-3/8 | Milvus Lite 两个坑：①新客户端连接已存在的 collection 时处于 `released` 状态，search 前必须显式 `client.load_collection()`（同进程 insert 后不受影响，跨进程必现）；②P0-9 记的中文路径 faiss 告警在"索引文件没写成"时并非纯告警——跨进程 load 会直接抛 `could not open ...idx for writing`，沙箱环境还会按乱码路径拦截。规避：`MILVUS_DB_PATH` 指向纯英文路径（`.env.example` 已注明）。 |
+| 2026-10-01 | P3-15 | 证据门阈值不能拍脑袋：初始 0.35/-10 在小语料（80 chunk）上形同虚设——BM25/向量检索总会返回最近结果，bge-reranker 对无关问题也给 raw≈0.0（prob≈0.50），库外问题（股市/电影/菜谱）全部误过门。按实测分布校准为 **prob≥0.53 且 raw≥0.15**（库内最弱相关 0.21/0.55，库外最高 0.003/0.50），3 条库外问题全部正确走 rewrite→fallback。 |
+| 2026-10-01 | P3-14 | CPU 上 Cross-Encoder 成本与候选数线性（热身后约 0.2s/对，首次另含约 7s 模型加载）：20 候选 P95≈2.7s，新增 `RAG_RERANK_INPUT_TOP_N=8`（P95≈2.4s 且 20/20 不丢召回；N=6 约 1.7s 但"新装宽带几天"这类弱相关问的正确片段排在 RRF 第 7 位会被截掉，19/20）。冷启动由 FastAPI lifespan 后台线程预热（`RAG_PREWARM=0` 可关）。 |
+| 2026-10-01 | P3-9/测试 | ①上传接口依赖 `python-multipart`，FastAPI 的 `UploadFile` 不会自动安装，需 `uv add python-multipart`。②子图测试统一在 `mokioclaw.rag.nodes` 命名空间打桩（节点是 `from ...retrieval import bm25_search` 形式导入）；阶段 2 意图测试里 rag_query 用例会真实挂载子图，必须同步打桩检索层走空召回兜底，否则会真跑 BGE/Milvus。全量 147 条测试通过（新增 14 条 RAG 子图测试）。 |
+| 2026-10-01 | P3-10 | 入库链路用短连接 aiosqlite（每次操作开新连接）而非全局 SQLAlchemy 引擎：子图在 rag_answer 节点内用 `asyncio.run` 起新事件循环，跨循环复用连接会报错；参考 core/session.py 的既有模式。8 份知识文档（md/html/txt 三种格式）验证 Docling HTML 解析无标签残留，共 46 个父分片/80 个子分片。 |
 | | | |

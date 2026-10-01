@@ -344,6 +344,11 @@ def test_stream_agent_events_resume_skips_entry_router(monkeypatch, tmp_path: Pa
 
 def test_stream_session_events_chat_writes_session_without_harness(monkeypatch, tmp_path: Path) -> None:
     from mokioclaw.core.agent import stream_session_events
+    from mokioclaw.core.session import load_or_create_session
+    from mokioclaw.db import dispose_engine
+    import asyncio
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "telecom_cs.db"))
 
     class FakeEntryWorkflow:
         def stream(self, inputs, stream_mode):
@@ -367,13 +372,21 @@ def test_stream_session_events_chat_writes_session_without_harness(monkeypatch, 
     assert "session_turn_saved" in custom_types
     assert not (tmp_path / ".mokioclaw" / "checkpoints").exists()
     assert not (tmp_path / ".mokioclaw" / "traces").exists()
-    assert (tmp_path / ".mokioclaw" / "session" / "session.json").exists()
+    # 会话状态已持久化到 SQLite（不再写 session.json）
+    reloaded = load_or_create_session(tmp_path)
+    assert reloaded["turn_index"] == 1
+    assert reloaded["last_route"] == "chat"
     assert (tmp_path / "SESSION_SUMMARY.md").exists()
+    asyncio.run(dispose_engine())
 
 
 def test_stream_session_events_workflow_reuses_workspace_and_session_context(monkeypatch, tmp_path: Path) -> None:
     from mokioclaw.core.agent import stream_session_events
+    from mokioclaw.core.session import load_or_create_session
+    from mokioclaw.db import dispose_engine
+    import asyncio
 
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "telecom_cs.db"))
     captured = {}
 
     class FakeEntryWorkflow:
@@ -407,7 +420,11 @@ def test_stream_session_events_workflow_reuses_workspace_and_session_context(mon
     assert captured["session_turn"] == 1
     assert "帮我创建 app.py" in captured["session_context"]
     assert any(event.get("type") == "workspace" and event.get("path") == str(tmp_path) for event in events)
-    assert (tmp_path / ".mokioclaw" / "session" / "session.json").exists()
+    # 会话状态已持久化到 SQLite（不再写 session.json）
+    reloaded = load_or_create_session(tmp_path)
+    assert reloaded["turn_index"] == 1
+    assert reloaded["last_route"] == "workflow"
+    asyncio.run(dispose_engine())
 
 
 class _WorkflowEntry:

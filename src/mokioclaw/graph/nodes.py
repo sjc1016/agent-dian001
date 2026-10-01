@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import threading
 from typing import Any
 
 from dotenv import load_dotenv
@@ -18,9 +20,20 @@ from mokioclaw.graph.memory import (
     persist_history_summary,
 )
 from mokioclaw.graph.state import MokioGraphState, TodoItem, VerificationCheck
+from mokioclaw.prompts.intent import (
+    AGENT_PLACEHOLDER_REPLY,
+    CLARIFY_MAX_ROUNDS,
+    CLARIFY_PROMPT,
+    FALLBACK_TEMPLATES,
+    INTENT_CATEGORIES,
+    INTENT_ROUTER_PROMPT,
+    UNKNOWN_CONFIDENCE_FLOOR,
+    UNKNOWN_MAX_STREAK,
+)
 from mokioclaw.prompts.stage3 import PLANNER_PROMPT, VERIFIER_PROMPT
 from mokioclaw.prompts.stage4 import CONTEXT_COMPRESSION_PROMPT
 from mokioclaw.providers.openai_provider import create_model
+from mokioclaw.rag.workflow import build_rag_subgraph
 from mokioclaw.tools.todo_tool import persist_todos, write_todos
 
 
@@ -32,40 +45,17 @@ DEFAULT_TODOS = [
     "Reflect on and verify the response before finishing.",
 ]
 
-INTENT_ROUTER_PROMPT = """You are the intent router for MokioClaw.
-
-Classify the user's latest input into exactly one route:
-
-- chat: greetings, thanks, identity/help questions, ordinary conceptual Q&A, or conversational messages that do not need workspace access.
-- workflow: any request that needs creating/editing/reading files, running commands, installing packages, searching the web, checking the current project, verifying a result, or producing a concrete deliverable.
-
-When session context is provided, use it only to understand whether the latest
-input is a continuation of prior coding work. A short follow-up like "继续",
-"修一下", or "运行测试" should be workflow if it refers to prior workspace work.
-
-Return only JSON with this shape:
-{"route":"chat"|"workflow","reason":"brief reason","confidence":0.0}
-
-If uncertain, choose workflow.
-"""
-
-CHAT_RESPONDER_PROMPT = """You are MokioClaw's lightweight chat node.
-
-Answer the user directly and concisely. Do not claim that you read files,
-searched the web, ran commands, edited files, or inspected the workspace.
-If the user asks for work requiring tools or project context, say that it
-should be handled by the workflow route.
-
-If session context is provided, you may use the recent conversation summary to
-answer conversational follow-ups, but do not invent workspace facts.
-"""
-
-
 def intent_router_node(state: MokioGraphState) -> dict[str, Any]:
+    """阶段 2：五类意图识别 + 追问/unknown 计数 + 强制兜底路由。
+
+    类别：rag_query / agent_service / clarify / irrelevant / unknown；
+    路由：rag_answer / agent_loop / clarify / fallback（unknown 未达阈值先追问）。
+    """
     writer = _get_writer()
-    route = "workflow"
-    reason = "router fallback: default to workflow"
+    category = "unknown"
+    reason = "router fallback: default to unknown"
     confidence = 0.0
+    pending_slots: list[str] = []
     try:
         response = create_model().invoke(
             [
@@ -74,58 +64,249 @@ def intent_router_node(state: MokioGraphState) -> dict[str, Any]:
             ]
         )
         parsed = _extract_json(str(response.content)) or {}
-        candidate = str(parsed.get("route", "")).strip().lower()
-        parsed_confidence = _coerce_confidence(parsed.get("confidence"))
-        if candidate in {"chat", "workflow"} and parsed_confidence >= 0.55:
-            route = candidate
-            confidence = parsed_confidence
+        candidate = str(parsed.get("category", "")).strip().lower()
+        confidence = _coerce_confidence(parsed.get("confidence"))
+        if candidate in INTENT_CATEGORIES:
+            category = candidate
             reason = str(parsed.get("reason") or "")
+            raw_slots = parsed.get("missing_slots")
+            if isinstance(raw_slots, list):
+                pending_slots = [str(slot).strip() for slot in raw_slots if str(slot).strip()][:5]
         else:
-            reason = str(parsed.get("reason") or "router returned low-confidence or invalid route")
-            confidence = parsed_confidence
+            reason = str(parsed.get("reason") or "router returned invalid category")
+        if confidence < UNKNOWN_CONFIDENCE_FLOOR:
+            category = "unknown"
+            reason = f"{reason} (low confidence)".strip()
     except Exception as exc:
         reason = f"router error: {type(exc).__name__}: {exc}"
 
+    if category in ("clarify", "unknown") and not pending_slots:
+        # 追问延续：上一轮识别出的待补槽位继续有效，避免追问失去靶点
+        pending_slots = [str(slot) for slot in (state.get("pending_slots") or []) if str(slot).strip()]
+
+    # 计数维护：明确业务即清零（连续语义）；clarify 由 clarify_node 递增；unknown 由本节点递增
+    clarify_count = int(state.get("clarify_count", 0) or 0)
+    unknown_count = int(state.get("unknown_count", 0) or 0)
+    if category == "unknown":
+        unknown_count += 1
+    elif category in ("rag_query", "agent_service", "irrelevant"):
+        clarify_count = 0
+        unknown_count = 0
+
+    route, fallback_reason = _route_for(category, clarify_count, unknown_count)
     event = {
         "type": "intent_decision",
         "route": route,
+        "category": category,
         "reason": reason,
         "confidence": confidence,
+        "clarify_count": clarify_count,
+        "unknown_count": unknown_count,
     }
     writer(event)
     return {
+        "intent_category": category,
         "intent_route": route,
         "intent_reason": reason,
         "intent_confidence": confidence,
+        "pending_slots": pending_slots,
+        "fallback_reason": fallback_reason,
+        "clarify_count": clarify_count,
+        "unknown_count": unknown_count,
     }
+
+
+def _route_for(category: str, clarify_count: int, unknown_count: int) -> tuple[str, str]:
+    """意图类别 → 图节点路由；达到阈值时强制兜底（P2-6）并给出兜底原因。"""
+    if category == "irrelevant":
+        return "fallback", "irrelevant_request"
+    if clarify_count >= CLARIFY_MAX_ROUNDS:
+        return "fallback", "clarify_exceeded"
+    if unknown_count >= UNKNOWN_MAX_STREAK:
+        return "fallback", "unknown_streak"
+    if category in ("clarify", "unknown"):
+        return "clarify", ""
+    return ("rag_answer", "") if category == "rag_query" else ("agent_loop", "")
 
 
 def intent_route_fn(state: MokioGraphState) -> str:
-    return "chat_responder" if state.get("intent_route") == "chat" else "planner"
+    return str(state.get("intent_route") or "fallback")
 
 
-def chat_responder_node(state: MokioGraphState) -> dict[str, Any]:
+def clarify_node(state: MokioGraphState) -> dict[str, Any]:
+    """P2-4：按 pending_slots 生成追问话术，clarify_count += 1。"""
     writer = _get_writer()
+    pending_slots = [str(slot) for slot in (state.get("pending_slots") or []) if str(slot).strip()]
+    question = ""
     try:
         response = create_model().invoke(
             [
-                SystemMessage(content=CHAT_RESPONDER_PROMPT),
-                HumanMessage(content=_chat_input(state)),
+                SystemMessage(content=CLARIFY_PROMPT),
+                HumanMessage(content=_clarify_input(state, pending_slots)),
             ]
         )
-        text = str(getattr(response, "content", "") or "").strip()
+        question = str(getattr(response, "content", "") or "").strip()
     except Exception as exc:
-        text = f"这是轻量聊天分支，但模型回复暂不可用：{type(exc).__name__}: {exc}"
-    if not text:
-        text = "我在。你可以继续提问，或者直接描述一个需要我完成的任务。"
+        writer({"type": "clarify_model_error", "error": f"{type(exc).__name__}: {exc}"})
+    if not question:
+        question = _default_clarify_question(pending_slots)
+    clarify_count = int(state.get("clarify_count", 0) or 0) + 1
     event = {
-        "type": "chat_response",
-        "mode": "lightweight",
-        "reason": state.get("intent_reason", ""),
-        "response": text,
+        "type": "clarify_question",
+        "question": question,
+        "pending_slots": pending_slots,
+        "clarify_count": clarify_count,
+        "category": state.get("intent_category", "clarify"),
     }
     writer(event)
-    return {"chat_response": text, "final_answer": text}
+    return {
+        "clarify_count": clarify_count,
+        "clarify_question": question,
+        "chat_response": question,
+        "final_answer": question,
+    }
+
+
+def fallback_node(state: MokioGraphState) -> dict[str, Any]:
+    """P2-5：兜底话术（说明服务边界 + 引导回四类业务），记录 fallback_reason。"""
+    writer = _get_writer()
+    reason = str(state.get("fallback_reason") or "")
+    if not reason:
+        if int(state.get("clarify_count", 0) or 0) >= CLARIFY_MAX_ROUNDS:
+            reason = "clarify_exceeded"
+        elif int(state.get("unknown_count", 0) or 0) >= UNKNOWN_MAX_STREAK:
+            reason = "unknown_streak"
+        else:
+            reason = "irrelevant_request"
+    reply = FALLBACK_TEMPLATES.get(reason, FALLBACK_TEMPLATES["irrelevant_request"])
+    event = {"type": "fallback_reply", "reason": reason, "reply": reply}
+    writer(event)
+    return {"fallback_reason": reason, "chat_response": reply, "final_answer": reply}
+
+
+def rag_answer_node(state: MokioGraphState) -> dict[str, Any]:
+    """P3-21：RAG 检索子图挂载点（替换阶段 2 占位）。
+
+    主图与子图状态解耦：问句进、答案+来源出。子图节点全部是 async，
+    主图当前由同步 stream 驱动（工作线程内无运行中的事件循环），
+    因此在独立事件循环里用 astream 驱动编译后的子图，并把子图 custom
+    事件（两路召回/融合分/精排分/证据门...）实时转发到主图流，接入 trace。
+    若主图本身被 astream 驱动，则在独立线程里起循环，避免嵌套事件循环。
+    """
+    writer = _get_writer()
+    task = str(state.get("task") or "")
+    sub_input = {
+        "query": task,
+        "original_query": task,
+        "rag_attempts": 0,
+        "session_context": str(state.get("session_context") or ""),
+    }
+    writer({"type": "rag_start", "query": task})
+
+    async def _drive_subgraph() -> dict[str, Any]:
+        final_state: dict[str, Any] = {}
+        node_sequence: list[str] = []
+        async for mode, chunk in build_rag_subgraph().astream(
+            sub_input, stream_mode=["updates", "custom"]
+        ):
+            if mode == "custom":
+                writer(chunk)
+            elif isinstance(chunk, dict):
+                for node_name, update in chunk.items():
+                    node_sequence.append(str(node_name))
+                    if isinstance(update, dict):
+                        final_state.update(update)
+        writer({"type": "rag_trace", "node_sequence": node_sequence})
+        return final_state
+
+    try:
+        result = _run_async(_drive_subgraph)
+    except Exception as exc:  # 子图整体异常不打断对话，降级为话术兜底
+        error = f"{type(exc).__name__}: {exc}"
+        writer({"type": "rag_error", "error": error})
+        reply = (
+            "抱歉，知识库检索服务暂时异常，暂时无法回答该问题，"
+            "请稍后再试或拨打 10000 号人工客服。"
+        )
+        return {"chat_response": reply, "final_answer": reply, "sources": []}
+
+    answer = str(result.get("answer") or "")
+    sources = list(result.get("sources") or [])
+    metadata = dict(state.get("metadata") or {})
+    if result.get("fallback_reason"):
+        metadata["rag_fallback_reason"] = result["fallback_reason"]
+    writer(
+        {
+            "type": "rag_finished",
+            "has_answer": bool(answer),
+            "sources_count": len(sources),
+            "rag_attempts": int(result.get("rag_attempts", 0) or 0),
+        }
+    )
+    return {
+        "chat_response": answer,
+        "final_answer": answer,
+        "sources": sources,
+        "metadata": metadata,
+    }
+
+
+def _run_async(factory):
+    """在同步主图节点里运行协程：无运行循环时 asyncio.run，否则开独立线程。"""
+    try:
+        asyncio.get_running_loop()
+        running_loop = True
+    except RuntimeError:
+        running_loop = False
+
+    if not running_loop:
+        return asyncio.run(factory())
+
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            box["result"] = asyncio.run(factory())
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
+def agent_loop_node(state: MokioGraphState) -> dict[str, Any]:
+    """P2-9：Agent 占位节点（阶段 4 替换为业务推理子图）。"""
+    writer = _get_writer()
+    writer(
+        {
+            "type": "agent_placeholder",
+            "task": state.get("task", ""),
+            "pending_slots": [str(slot) for slot in (state.get("pending_slots") or [])],
+        }
+    )
+    return {"chat_response": AGENT_PLACEHOLDER_REPLY, "final_answer": AGENT_PLACEHOLDER_REPLY}
+
+
+def _clarify_input(state: MokioGraphState, pending_slots: list[str]) -> str:
+    parts = [f"用户输入：{state.get('task', '')}"]
+    if pending_slots:
+        parts.append("待补槽位：" + "、".join(pending_slots[:3]))
+    if state.get("session_context"):
+        parts.append("会话上下文：\n" + str(state.get("session_context", "")))
+    return "\n\n".join(parts)
+
+
+def _default_clarify_question(pending_slots: list[str]) -> str:
+    if pending_slots:
+        return "为了更好地为您办理，请补充：" + "、".join(pending_slots[:3]) + "。"
+    return (
+        "请问您想咨询或办理哪项业务呢？例如：查询话费余额、了解或变更套餐、"
+        "宽带/手机故障报修、资费规则咨询。"
+    )
 
 
 def planner_node(state: MokioGraphState) -> dict[str, Any]:
@@ -622,13 +803,6 @@ def _verifier_input(state: MokioGraphState, memory: dict[str, Any]) -> str:
 
 
 def _router_input(state: MokioGraphState) -> str:
-    parts = [f"User input:\n{state.get('task', '')}"]
-    if state.get("session_context"):
-        parts.append("Session context:\n" + str(state.get("session_context", "")))
-    return "\n\n".join(parts)
-
-
-def _chat_input(state: MokioGraphState) -> str:
     parts = [f"User input:\n{state.get('task', '')}"]
     if state.get("session_context"):
         parts.append("Session context:\n" + str(state.get("session_context", "")))

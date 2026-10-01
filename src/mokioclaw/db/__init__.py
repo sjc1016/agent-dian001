@@ -1,8 +1,9 @@
-"""SQLite 持久化基础设施（阶段 0）。
+"""SQLite 持久化基础设施。
 
 - 使用 SQLAlchemy 异步引擎 + aiosqlite 驱动；
 - 数据库开启 WAL 日志模式，适合本地并发读写；
-- :func:`init_db` 幂等执行 ``schema.sql``，供应用启动时调用。
+- :func:`init_db` 幂等执行 ``schema.sql``，供应用启动时调用；
+- :mod:`mokioclaw.db.models` 提供 ORM 模型（阶段 1 起包含 ``session`` 表）。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from mokioclaw.db.engine import (
     resolve_db_path,
     session_scope,
 )
+from mokioclaw.db.models import SessionModel
 
 __all__ = [
     "database_url",
@@ -23,4 +25,5 @@ __all__ = [
     "init_db",
     "resolve_db_path",
     "session_scope",
+    "SessionModel",
 ]

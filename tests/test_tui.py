@@ -56,7 +56,7 @@ def test_natural_task_entry_still_works(monkeypatch, tmp_path) -> None:
         calls.append((args, kwargs))
         yield {"type": "workspace", "path": str(tmp_path)}
 
-    monkeypatch.setattr("mokioclaw.cli.app.stream_agent_events", fake_stream)
+    monkeypatch.setattr("mokioclaw.cli.app.stream_chat_events", fake_stream)
 
     result = runner.invoke(app, ["demo task"])
 
@@ -186,11 +186,15 @@ def test_tui_hides_low_level_entry_graph_updates() -> None:
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(0.1)
             before = len(app.query_one("#events").children)
-            app._handle_event({"type": "graph_event", "event": {"intent_router": {"intent_route": "chat"}}})
-            app._handle_event({"type": "graph_event", "event": {"chat_responder": {"chat_response": "hi"}}})
-            app._handle_event({"type": "custom_event", "event": {"type": "session_turn_started", "turn": 1, "task": "hello"}})
+            # 阶段 2：意图路由内部决策事件隐藏
+            app._handle_event({"type": "graph_event", "event": {"intent_router": {"intent_route": "clarify"}}})
             await pilot.pause(0.1)
             assert len(app.query_one("#events").children) == before
+            # 终端节点（追问/兜底/占位）输出包含回复话术，需要保留展示
+            app._handle_event({"type": "graph_event", "event": {"clarify": {"final_answer": "请问您想查询话费还是办理套餐？"}}})
+            app._handle_event({"type": "custom_event", "event": {"type": "session_turn_started", "turn": 1, "task": "hello"}})
+            await pilot.pause(0.1)
+            assert len(app.query_one("#events").children) == before + 1
 
     asyncio.run(run())
 

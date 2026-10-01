@@ -87,6 +87,13 @@ async def init_db(db_path: Path | None = None) -> Path:
         await connection.execute("PRAGMA journal_mode=WAL")
         await connection.execute("PRAGMA foreign_keys=ON")
         await connection.executescript(schema_sql)
+        # 阶段 2：旧库迁移——session 表补齐跨轮计数列（CREATE IF NOT EXISTS 不会改已存在的表）
+        cursor = await connection.execute("PRAGMA table_info(session)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "clarify_count" not in columns:
+            await connection.execute("ALTER TABLE session ADD COLUMN clarify_count INTEGER NOT NULL DEFAULT 0")
+        if "unknown_count" not in columns:
+            await connection.execute("ALTER TABLE session ADD COLUMN unknown_count INTEGER NOT NULL DEFAULT 0")
         await connection.commit()
 
     return path

@@ -3,15 +3,18 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from mokioclaw.graph.nodes import (
-    chat_responder_node,
+    agent_loop_node,
+    clarify_node,
     context_compressor_node,
     context_compressor_route,
     context_monitor_node,
     context_monitor_route,
+    fallback_node,
     final_node,
     intent_route_fn,
     intent_router_node,
     planner_node,
+    rag_answer_node,
     verifier_node,
 )
 from mokioclaw.graph.state import MokioGraphState
@@ -47,15 +50,24 @@ def build_complex_workflow():
 
 
 def build_entry_workflow():
+    """阶段 2：入口对话图（意图识别与任务调度）。
+
+    intent_router 条件边 → rag_answer（占位）/ agent_loop（占位）/ clarify（追问）/ fallback（兜底），
+    四类分支均产出 final_answer 后结束；unknown 未达阈值时先路由 clarify 追问。
+    """
     graph = StateGraph(MokioGraphState)
     graph.add_node("intent_router", intent_router_node)
-    graph.add_node("chat_responder", chat_responder_node)
+    graph.add_node("rag_answer", rag_answer_node)
+    graph.add_node("agent_loop", agent_loop_node)
+    graph.add_node("clarify", clarify_node)
+    graph.add_node("fallback", fallback_node)
 
     graph.add_edge(START, "intent_router")
     graph.add_conditional_edges(
         "intent_router",
         intent_route_fn,
-        {"chat_responder": "chat_responder", "planner": END},
+        {"rag_answer": "rag_answer", "agent_loop": "agent_loop", "clarify": "clarify", "fallback": "fallback"},
     )
-    graph.add_edge("chat_responder", END)
+    for node in ("rag_answer", "agent_loop", "clarify", "fallback"):
+        graph.add_edge(node, END)
     return graph.compile()

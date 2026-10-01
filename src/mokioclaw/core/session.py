@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import select
+
 from mokioclaw.core.checkpoint import workspace_manifest
+from mokioclaw.db import SessionModel, session_scope
+from mokioclaw.db.engine import init_db
 
 
 SESSION_ROOT = Path(".mokioclaw") / "session"
@@ -23,6 +28,7 @@ def session_dir(workspace: Path) -> Path:
 
 
 def session_file(workspace: Path) -> Path:
+    """会话文件路径（阶段 1 起仅作事件元信息展示，不再作为存储来源）。"""
     return session_dir(workspace) / SESSION_FILE
 
 
@@ -32,16 +38,15 @@ def session_summary_file(workspace: Path) -> Path:
 
 def load_or_create_session(workspace: Path) -> dict[str, Any]:
     workspace.mkdir(parents=True, exist_ok=True)
-    path = session_file(workspace)
-    if path.exists():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            raw = {}
+    workspace_key = str(workspace)
+    row = _run(_load_session_row(workspace_key))
+    if row is not None:
+        session = _row_to_session(row, workspace)
     else:
-        raw = {}
-    session = _normalize_session(raw, workspace)
-    save_session(workspace, session)
+        session = _normalize_session({}, workspace)
+        _run(_upsert_session_row(workspace_key, session))
+    # 保留人读摘要文件，便于事件展示与调试
+    _write_summary_file(workspace, session)
     return session
 
 
@@ -90,10 +95,8 @@ def save_session(workspace: Path, session: dict[str, Any]) -> dict[str, Any]:
     session = _normalize_session(session, workspace)
     _compact_session(session)
     session["updated_at"] = utc_now()
-    path = session_file(workspace)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(session, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-    session_summary_file(workspace).write_text(build_session_summary_markdown(workspace, session), encoding="utf-8")
+    _run(_upsert_session_row(str(workspace), session))
+    _write_summary_file(workspace, session)
     return session
 
 
@@ -212,8 +215,16 @@ def _normalize_session(raw: dict[str, Any], workspace: Path) -> dict[str, Any]:
     session.setdefault("last_route", "")
     session.setdefault("last_task", "")
     session.setdefault("last_final_answer", "")
+    session.setdefault("pending_slots", [])
+    session.setdefault("clarify_count", 0)
+    session.setdefault("unknown_count", 0)
     if not isinstance(session.get("recent_turns"), list):
         session["recent_turns"] = []
+    if not isinstance(session.get("pending_slots"), list):
+        # 阶段 1 曾以 dict 兼容存储；阶段 2 统一为字符串列表
+        session["pending_slots"] = []
+    session["clarify_count"] = int(session.get("clarify_count") or 0)
+    session["unknown_count"] = int(session.get("unknown_count") or 0)
     session["workspace"] = str(workspace)
     session["turn_index"] = int(session.get("turn_index") or 0)
     session["summary"] = trim_text(str(session.get("summary", "")), MAX_SESSION_SUMMARY)
@@ -241,3 +252,108 @@ def _compact_session(session: dict[str, Any]) -> None:
     existing = str(session.get("summary", ""))
     session["summary"] = trim_text("\n".join(part for part in [existing, *additions] if part), MAX_SESSION_SUMMARY)
     session["recent_turns"] = kept
+
+
+# ---------------------------------------------------------------------------
+# SQLite 持久化辅助：session.py 的公共函数保持同步签名，
+# 内部通过 asyncio.run 调用异步 DB 操作；这些函数运行在工作线程中
+# （由 api 层 asyncio.to_thread 调度），因此没有运行中的事件循环。
+# ---------------------------------------------------------------------------
+
+
+def _run(coro):
+    """在同步上下文中执行协程。"""
+    return asyncio.run(coro)
+
+
+async def _ensure_db() -> None:
+    """确保数据库已初始化（幂等）。"""
+    await init_db()
+
+
+async def _load_session_row(workspace: str) -> SessionModel | None:
+    await _ensure_db()
+    async with session_scope() as session:
+        result = await session.execute(
+            select(SessionModel).where(SessionModel.workspace == workspace)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _upsert_session_row(workspace: str, data: dict[str, Any]) -> None:
+    await _ensure_db()
+    async with session_scope() as session:
+        existing = (
+            await session.execute(
+                select(SessionModel).where(SessionModel.workspace == workspace)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            row = SessionModel(
+                session_id=str(data.get("session_id", "")),
+                workspace=workspace,
+                turn_index=int(data.get("turn_index", 0)),
+                last_route=str(data.get("last_route", "")),
+                last_task=str(data.get("last_task", "")),
+                last_final_answer=str(data.get("last_final_answer", "")),
+                summary=str(data.get("summary", "")),
+                recent_turns=json.dumps(data.get("recent_turns", []), ensure_ascii=False, default=str),
+                pending_slots=json.dumps(data.get("pending_slots", []), ensure_ascii=False, default=str),
+                clarify_count=int(data.get("clarify_count", 0) or 0),
+                unknown_count=int(data.get("unknown_count", 0) or 0),
+                created_at=str(data.get("created_at", utc_now())),
+                updated_at=str(data.get("updated_at", utc_now())),
+            )
+            session.add(row)
+        else:
+            existing.session_id = str(data.get("session_id", existing.session_id))
+            existing.turn_index = int(data.get("turn_index", existing.turn_index))
+            existing.last_route = str(data.get("last_route", existing.last_route))
+            existing.last_task = str(data.get("last_task", existing.last_task))
+            existing.last_final_answer = str(data.get("last_final_answer", existing.last_final_answer))
+            existing.summary = str(data.get("summary", existing.summary))
+            existing.recent_turns = json.dumps(data.get("recent_turns", []), ensure_ascii=False, default=str)
+            existing.pending_slots = json.dumps(data.get("pending_slots", []), ensure_ascii=False, default=str)
+            existing.clarify_count = int(data.get("clarify_count", 0) or 0)
+            existing.unknown_count = int(data.get("unknown_count", 0) or 0)
+            existing.updated_at = str(data.get("updated_at", utc_now()))
+
+
+def _row_to_session(row: SessionModel, workspace: Path) -> dict[str, Any]:
+    try:
+        recent_turns = json.loads(row.recent_turns) if row.recent_turns else []
+    except (json.JSONDecodeError, TypeError):
+        recent_turns = []
+    try:
+        pending_slots = json.loads(row.pending_slots) if row.pending_slots else []
+    except (json.JSONDecodeError, TypeError):
+        pending_slots = []
+    if not isinstance(pending_slots, list):
+        # 阶段 1 曾以 dict 兼容存储；阶段 2 统一为字符串列表
+        pending_slots = []
+    return {
+        "version": 1,
+        "session_id": row.session_id,
+        "workspace": str(workspace),
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "turn_index": row.turn_index,
+        "summary": row.summary,
+        "recent_turns": recent_turns,
+        "last_route": row.last_route,
+        "last_task": row.last_task,
+        "last_final_answer": row.last_final_answer,
+        "pending_slots": pending_slots,
+        "clarify_count": int(row.clarify_count or 0),
+        "unknown_count": int(row.unknown_count or 0),
+    }
+
+
+def _write_summary_file(workspace: Path, session: dict[str, Any]) -> None:
+    """保留人读的会话摘要文件（非存储来源，仅用于事件展示与调试）。"""
+    try:
+        path = session_summary_file(workspace)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(build_session_summary_markdown(workspace, session), encoding="utf-8")
+    except OSError:
+        pass

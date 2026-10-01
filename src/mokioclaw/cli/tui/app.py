@@ -14,10 +14,10 @@ from textual.message import Message
 from textual.widgets import Collapsible, Footer, Header, Input, Static
 
 from mokioclaw.cli.event_summary import EventSummary, shorten, summarize_event
+from mokioclaw.cli.sse_client import DEFAULT_API_URL, stream_chat_events
 from mokioclaw.cli.tui.approval import ApprovalGate, ApprovalModal
 from mokioclaw.cli.tui.logo import render_logo
 from mokioclaw.core.approval import ApprovalDecision, ApprovalRequest
-from mokioclaw.core.agent import stream_session_events
 from mokioclaw.core.paths import default_workspace
 
 
@@ -201,22 +201,25 @@ class MokioClawTuiApp(App[None]):
         initial_task: str | None = None,
         workspace: Path | None = None,
         max_attempts: int = 3,
+        api_url: str = DEFAULT_API_URL,
         approval_mode: Literal["inline", "auto", "deny"] = "inline",
         checkpoint_mode: Literal["light", "strict", "off"] = "light",
         trace_mode: Literal["on", "off"] = "on",
         resume: Path | None = None,
-        stream_factory: StreamFactory = stream_session_events,
+        stream_factory: StreamFactory | None = None,
     ) -> None:
         super().__init__()
         self.initial_task = initial_task
         self.workspace = resume or workspace or default_workspace()
         self.session_workspace = self.workspace
         self.max_attempts = max_attempts
+        self.api_url = api_url
         self.approval_mode = approval_mode
         self.checkpoint_mode = checkpoint_mode
         self.trace_mode = trace_mode
         self.resume = resume
-        self.stream_factory = stream_factory
+        # 阶段 1：默认走 HTTP/SSE 客户端；stream_factory 仅用于测试注入
+        self.stream_factory = stream_factory or self._http_stream_factory
         self.running = False
         self.run_count = 0
         self.approval_count = 0
@@ -231,6 +234,15 @@ class MokioClawTuiApp(App[None]):
         self.sidebar_text = ""
         self.todos: list[dict[str, Any]] = []
         self._state_lock = Lock()
+
+    def _http_stream_factory(self, task: str, **kwargs: Any) -> Iterable[dict[str, Any]]:
+        """通过 HTTP/SSE 调用后端 ``/chat`` 接口。"""
+        return stream_chat_events(
+            task,
+            api_url=self.api_url,
+            workspace=str(self.session_workspace),
+            max_attempts=self.max_attempts,
+        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -566,7 +578,9 @@ class MokioClawTuiApp(App[None]):
             return True
         payload = event.get("event")
         if event.get("type") == "graph_event" and isinstance(payload, dict):
-            hidden_nodes = {"intent_router", "chat_responder"}
+            # 阶段 2：隐藏意图路由内部决策；四类终端节点（rag 占位/agent 占位/追问/兜底）
+            # 的输出包含回复话术，需要保留展示
+            hidden_nodes = {"intent_router"}
             return all(node in hidden_nodes for node in payload)
         if event.get("type") == "custom_event" and isinstance(payload, dict):
             return payload.get("type") in {"session_started", "session_turn_started", "memory_snapshot"}

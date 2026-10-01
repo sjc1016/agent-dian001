@@ -73,6 +73,13 @@ class MokioGraphState(TypedDict, total=False):
     intent_route: str
     intent_reason: str
     intent_confidence: float
+    # 阶段 2：意图识别与任务调度
+    intent_category: str  # rag_query / agent_service / clarify / irrelevant / unknown
+    clarify_count: int  # 连续追问轮数（跨轮持久化，明确业务后清零）
+    clarify_question: str
+    pending_slots: list[str]  # 待确认槽位（追问澄清用）
+    fallback_reason: str  # irrelevant_request / clarify_exceeded / unknown_streak
+    unknown_count: int  # 连续 unknown 轮数（达到阈值强制兜底）
     chat_response: str
     session_id: str
     session_turn: int
