@@ -14,6 +14,7 @@ from mokioclaw.graph.nodes import (
     intent_route_fn,
     intent_router_node,
     planner_node,
+    query_rewrite_node,
     rag_answer_node,
     verifier_node,
 )
@@ -50,19 +51,22 @@ def build_complex_workflow():
 
 
 def build_entry_workflow():
-    """阶段 2：入口对话图（意图识别与任务调度）。
+    """阶段 2/5：入口对话图（查询重写 → 意图识别 → 任务调度）。
 
-    intent_router 条件边 → rag_answer（占位）/ agent_loop（占位）/ clarify（追问）/ fallback（兜底），
+    阶段 5 起 START 先进入 query_rewrite（指代消解/省略补全，无指代透传），
+    再到 intent_router 条件边 → rag_answer / agent_loop / clarify / fallback，
     四类分支均产出 final_answer 后结束；unknown 未达阈值时先路由 clarify 追问。
     """
     graph = StateGraph(MokioGraphState)
+    graph.add_node("query_rewrite", query_rewrite_node)
     graph.add_node("intent_router", intent_router_node)
     graph.add_node("rag_answer", rag_answer_node)
     graph.add_node("agent_loop", agent_loop_node)
     graph.add_node("clarify", clarify_node)
     graph.add_node("fallback", fallback_node)
 
-    graph.add_edge(START, "intent_router")
+    graph.add_edge(START, "query_rewrite")
+    graph.add_edge("query_rewrite", "intent_router")
     graph.add_conditional_edges(
         "intent_router",
         intent_route_fn,

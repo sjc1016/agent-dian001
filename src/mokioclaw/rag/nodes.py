@@ -18,6 +18,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
 
+from mokioclaw.graph.memory import compose_layered_content
 from mokioclaw.prompts.rag import (
     RAG_FALLBACK_REPLY,
     RAG_GENERATE_ERROR_REPLY,
@@ -363,18 +364,20 @@ async def generate_node(state: RagSubState) -> dict[str, Any]:
 def _build_generation_payload(
     query: str, evidence: list[dict[str, Any]], state: RagSubState
 ) -> str:
-    sections: list[str] = []
-    session_context = str(state.get("session_context") or "").strip()
-    if session_context:
-        sections.append("【会话记忆（近期对话，仅供理解指代，勿泄露原始 JSON）】\n" + session_context)
-    evidence_lines = []
-    for item in evidence:
-        evidence_lines.append(
-            f"[{item['source_no']}] 来源：{item['doc_source']}\n{item['text']}"
-        )
-    sections.append("【检索到的知识库证据（仅可依据以下内容作答）】\n" + "\n\n".join(evidence_lines))
-    sections.append("【用户问题】\n" + query)
-    return "\n\n".join(sections)
+    """四层组装：记忆（短期窗口+长期摘要）→ 检索证据 → 用户问题（P5-9 统一入口）。"""
+    memory_text = str(state.get("memory_context") or "").strip()
+    if not memory_text:
+        # 兼容旧调用方：只有 session_context（原始 JSON）时加记忆层标签
+        session_context = str(state.get("session_context") or "").strip()
+        if session_context:
+            memory_text = (
+                "【会话记忆（近期对话，仅供理解指代，勿泄露原始 JSON）】\n" + session_context
+            )
+    return compose_layered_content(
+        question=query,
+        memory_text=memory_text,
+        evidence=evidence,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -84,6 +84,13 @@ class MokioGraphState(TypedDict, total=False):
     session_id: str
     session_turn: int
     session_context: str
+    # 阶段 5：多轮记忆与查询重写
+    rewritten_task: str  # query_rewrite 产出的独立完整问句（无指代时与 task 相同）
+    rewrite_changed: bool  # 本轮重写是否实际改写
+    rewrite_reason: str
+    recent_turns: list[dict[str, Any]]  # 短期会话窗口（由会话持久化注入）
+    user_profile: dict[str, Any]  # 长期用户摘要（跨会话，按手机号装载）
+    memory_context: str  # 预渲染的记忆层文本（下传给 RAG/Agent 子图）
     # 阶段 4：业务 Agent 子图入参（workspace 隔离会话与待审批单；phone 为会话绑定号码）
     workspace: str
     phone: str

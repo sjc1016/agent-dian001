@@ -12,10 +12,14 @@ from langgraph.config import get_stream_writer
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from mokioclaw.graph.memory import (
+    assemble_layered_messages,
+    build_customer_memory,
     build_layered_memory,
+    customer_memory_event,
     format_layered_memory_for_prompt,
     memory_event,
     persist_history_summary,
+    render_memory_sections,
 )
 from mokioclaw.graph.state import MokioGraphState, TodoItem, VerificationCheck
 from mokioclaw.agent.nodes import detect_approval_resolution
@@ -30,6 +34,7 @@ from mokioclaw.prompts.intent import (
     UNKNOWN_CONFIDENCE_FLOOR,
     UNKNOWN_MAX_STREAK,
 )
+from mokioclaw.prompts.memory import QUERY_REWRITE_PROMPT
 from mokioclaw.prompts.stage3 import PLANNER_PROMPT, VERIFIER_PROMPT
 from mokioclaw.prompts.stage4 import CONTEXT_COMPRESSION_PROMPT
 from mokioclaw.providers.openai_provider import create_model
@@ -49,6 +54,92 @@ DEFAULT_TODOS = [
     "Handle the request via retrieval or business skills.",
     "Reflect on and verify the response before finishing.",
 ]
+
+
+async def query_rewrite_node(state: MokioGraphState) -> dict[str, Any]:
+    """P5-1/P5-2/P5-3：指代消解与查询重写，位于 intent_router 之前。
+
+    结合短期会话窗口 + 长期用户摘要，把"那这个多少钱/帮我办这个"这类
+    指代/省略输入改写为脱离上下文也完整的独立问句；首轮无历史窗口、
+    空输入或模型判定无指代时原样透传（不改变后续意图分流）。
+
+    同时承担四层记忆的首次装配：预渲染 memory_context 供 RAG/Agent
+    子图复用（子图与主图状态解耦，只接收渲染好的记忆文本）。
+    """
+    writer = _get_writer()
+    task = str(state.get("task") or "")
+    memory = build_customer_memory(state, node="query_rewrite")
+    memory_text = render_memory_sections(memory)
+    writer(customer_memory_event(memory, node="query_rewrite"))
+
+    base_update = {
+        "rewritten_task": task,
+        "rewrite_changed": False,
+        "rewrite_reason": "",
+        "memory_context": memory_text,
+    }
+    stripped = task.strip()
+    has_window = bool(memory["working_memory"]["short_term_window"])
+    if not stripped:
+        writer({"type": "query_rewrite", "changed": False, "original": task, "rewritten": task,
+                "reason": "empty input, passthrough"})
+        return base_update
+    if not has_window:
+        # 首轮（无会话历史）不存在可消解的指代，跳过 LLM 直接透传，省一次模型调用
+        writer({"type": "query_rewrite", "changed": False, "original": task, "rewritten": task,
+                "reason": "no conversation window, passthrough"})
+        return base_update
+
+    rewritten, reason, error = task, "", ""
+    try:
+        response = await create_model().ainvoke(
+            assemble_layered_messages(
+                QUERY_REWRITE_PROMPT, state, question=task, node="query_rewrite"
+            )
+        )
+        changed, rewritten, reason = _parse_rewrite_result(
+            str(getattr(response, "content", "") or ""), task
+        )
+    except Exception as exc:  # noqa: BLE001 —— 重写模型异常绝不阻断主链路
+        changed, rewritten, reason = False, task, "rewrite model error, passthrough"
+        error = f"{type(exc).__name__}: {exc}"
+        writer({"type": "query_rewrite_error", "error": error})
+
+    writer(
+        {
+            "type": "query_rewrite",
+            "changed": changed,
+            "original": task,
+            "rewritten": rewritten,
+            "reason": reason,
+        }
+    )
+    return {
+        **base_update,
+        "rewritten_task": rewritten,
+        "rewrite_changed": changed,
+        "rewrite_reason": reason,
+    }
+
+
+def _parse_rewrite_result(raw: str, original: str) -> tuple[bool, str, str]:
+    """解析重写模型输出 → (changed, rewritten, reason)，任何异常形态都安全透传。"""
+    parsed = _extract_json(raw)
+    if parsed is not None:
+        rewritten = str(parsed.get("rewritten") or "").strip()
+        reason = str(parsed.get("reason") or "").strip()
+        changed = bool(parsed.get("changed"))
+        if not rewritten:
+            return False, original, reason or "model returned empty rewrite"
+        if not changed or rewritten == original.strip():
+            return False, original, reason or "no coreference, passthrough"
+        return True, rewritten, reason or "coreference resolved"
+    # 兼容个别模型不遵守 JSON 协议直接返回改写句子的情况
+    plain = raw.strip()
+    if plain and "{" not in plain and plain != original.strip():
+        return True, plain, "plain-text rewrite"
+    return False, original, "unparseable output, passthrough"
+
 
 async def intent_router_node(state: MokioGraphState) -> dict[str, Any]:
     """阶段 2：五类意图识别 + 追问/unknown 计数 + 强制兜底路由（阶段 4 起原生 async）。
@@ -105,12 +196,16 @@ async def intent_router_node(state: MokioGraphState) -> dict[str, Any]:
     reason = "router fallback: default to unknown"
     confidence = 0.0
     pending_slots: list[str] = []
+    # 阶段 5：意图分类输入使用重写后的独立问句（指代已消解）；审批短路判定已用原文完成
+    question = str(state.get("rewritten_task") or task_text or "")
     try:
         response = await create_model().ainvoke(
-            [
-                SystemMessage(content=INTENT_ROUTER_PROMPT),
-                HumanMessage(content=_router_input(state)),
-            ]
+            assemble_layered_messages(
+                INTENT_ROUTER_PROMPT,
+                state,
+                question=question,
+                node="intent_router",
+            )
         )
         parsed = _extract_json(str(response.content)) or {}
         candidate = str(parsed.get("category", "")).strip().lower()
@@ -151,6 +246,9 @@ async def intent_router_node(state: MokioGraphState) -> dict[str, Any]:
         "confidence": confidence,
         "clarify_count": clarify_count,
         "unknown_count": unknown_count,
+        "original_input": task_text,
+        "rewritten_input": question,
+        "rewrite_changed": bool(state.get("rewrite_changed")),
     }
     writer(event)
     return {
@@ -186,23 +284,30 @@ async def clarify_node(state: MokioGraphState) -> dict[str, Any]:
     """P2-4：按 pending_slots 生成追问话术，clarify_count += 1（阶段 4 起原生 async）。"""
     writer = _get_writer()
     pending_slots = [str(slot) for slot in (state.get("pending_slots") or []) if str(slot).strip()]
-    question = ""
+    question = str(state.get("task") or "")
+    extra_sections = []
+    if pending_slots:
+        extra_sections.append("待补槽位：" + "、".join(pending_slots[:3]))
+    question_text = ""
     try:
         response = await create_model().ainvoke(
-            [
-                SystemMessage(content=CLARIFY_PROMPT),
-                HumanMessage(content=_clarify_input(state, pending_slots)),
-            ]
+            assemble_layered_messages(
+                CLARIFY_PROMPT,
+                state,
+                question=question,
+                node="clarify",
+                extra_sections=extra_sections,
+            )
         )
-        question = str(getattr(response, "content", "") or "").strip()
+        question_text = str(getattr(response, "content", "") or "").strip()
     except Exception as exc:
         writer({"type": "clarify_model_error", "error": f"{type(exc).__name__}: {exc}"})
-    if not question:
-        question = _default_clarify_question(pending_slots)
+    if not question_text:
+        question_text = _default_clarify_question(pending_slots)
     clarify_count = int(state.get("clarify_count", 0) or 0) + 1
     event = {
         "type": "clarify_question",
-        "question": question,
+        "question": question_text,
         "pending_slots": pending_slots,
         "clarify_count": clarify_count,
         "category": state.get("intent_category", "clarify"),
@@ -210,9 +315,9 @@ async def clarify_node(state: MokioGraphState) -> dict[str, Any]:
     writer(event)
     return {
         "clarify_count": clarify_count,
-        "clarify_question": question,
-        "chat_response": question,
-        "final_answer": question,
+        "clarify_question": question_text,
+        "chat_response": question_text,
+        "final_answer": question_text,
     }
 
 
@@ -242,13 +347,16 @@ async def rag_answer_node(state: MokioGraphState) -> dict[str, Any]:
     """
     writer = _get_writer()
     task = str(state.get("task") or "")
+    # 阶段 5：检索与意图分流都使用重写后的独立问句；答案展示仍回传用户原始问句
+    query = str(state.get("rewritten_task") or task)
     sub_input = {
-        "query": task,
+        "query": query,
         "original_query": task,
         "rag_attempts": 0,
         "session_context": str(state.get("session_context") or ""),
+        "memory_context": _memory_context(state),
     }
-    writer({"type": "rag_start", "query": task})
+    writer({"type": "rag_start", "query": query, "original_query": task})
 
     try:
         result: dict[str, Any] = {}
@@ -304,6 +412,8 @@ async def agent_loop_node(state: MokioGraphState) -> dict[str, Any]:
     writer = _get_writer()
     task = str(state.get("task") or "")
     workspace = str(state.get("workspace") or "")
+    # 阶段 5：传给 Agent 的诉求为重写后的完整问句（"帮我办这个"→含套餐名）
+    query = str(state.get("rewritten_task") or task)
 
     pending = state.get("pending_approval")
     if pending is None:
@@ -313,8 +423,9 @@ async def agent_loop_node(state: MokioGraphState) -> dict[str, Any]:
         resolution = detect_approval_resolution(task)
 
     sub_input: dict[str, Any] = {
-        "query": task,
+        "query": query,
         "session_context": str(state.get("session_context") or ""),
+        "memory_context": _memory_context(state),
         "phone": str(state.get("phone") or DEFAULT_DEMO_PHONE),
         "workspace": workspace,
         "approval_mode": str(state.get("approval_mode") or "inline"),
@@ -326,7 +437,8 @@ async def agent_loop_node(state: MokioGraphState) -> dict[str, Any]:
     writer(
         {
             "type": "agent_start",
-            "query": task,
+            "query": query,
+            "original_query": task,
             "has_pending_approval": pending is not None,
             "approval_resolution": sub_input["approval_resolution"],
         }
@@ -412,13 +524,12 @@ async def _cancel_pending_approval(pending: dict[str, Any]) -> None:
         return
 
 
-def _clarify_input(state: MokioGraphState, pending_slots: list[str]) -> str:
-    parts = [f"用户输入：{state.get('task', '')}"]
-    if pending_slots:
-        parts.append("待补槽位：" + "、".join(pending_slots[:3]))
-    if state.get("session_context"):
-        parts.append("会话上下文：\n" + str(state.get("session_context", "")))
-    return "\n\n".join(parts)
+def _memory_context(state: MokioGraphState) -> str:
+    """获取预渲染记忆层文本；query_rewrite 已渲染则直接复用，否则现场构建（直连子图场景兜底）。"""
+    existing = str(state.get("memory_context") or "").strip()
+    if existing:
+        return existing
+    return render_memory_sections(build_customer_memory(state, node="graph"))
 
 
 def _default_clarify_question(pending_slots: list[str]) -> str:
@@ -920,13 +1031,6 @@ def _verifier_input(state: MokioGraphState, memory: dict[str, Any]) -> str:
         parts.append("Session context for this multi-turn conversation:\n" + str(state.get("session_context", "")))
     parts.append("Layered memory snapshot:\n" + format_layered_memory_for_prompt(memory))
     parts.append("Return only verifier JSON.")
-    return "\n\n".join(parts)
-
-
-def _router_input(state: MokioGraphState) -> str:
-    parts = [f"User input:\n{state.get('task', '')}"]
-    if state.get("session_context"):
-        parts.append("Session context:\n" + str(state.get("session_context", "")))
     return "\n\n".join(parts)
 
 

@@ -108,6 +108,22 @@ CREATE TABLE IF NOT EXISTS pending_approval (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_approval_ws ON pending_approval(workspace, status);
 
+-- 阶段 5：跨会话长期用户摘要（按号码维度，一个用户可有多个会话 workspace）。
+-- 会话进行中由压缩机制把新增轮次并入 topics / open_tickets / preferred_package / summary，
+-- 新会话开始时按 phone 装载；turn_count 为已压缩进摘要的轮次水位。
+CREATE TABLE IF NOT EXISTS user_profile (
+    phone               TEXT PRIMARY KEY,
+    owner_name          TEXT NOT NULL DEFAULT '',
+    summary             TEXT NOT NULL DEFAULT '',   -- 长期用户摘要（压缩生成的叙述性文本）
+    topics              TEXT NOT NULL DEFAULT '[]', -- 历史咨询主题 JSON 数组
+    open_tickets        TEXT NOT NULL DEFAULT '[]', -- 在办工单 JSON 数组（工单号/类型/状态）
+    preferred_package   TEXT NOT NULL DEFAULT '',   -- 偏好/关注套餐（名称或档位）
+    turn_count          INTEGER NOT NULL DEFAULT 0, -- 已并入摘要的会话轮次水位
+    last_session_workspace TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
 -- 演示种子数据（INSERT OR IGNORE：幂等建库不覆盖用户改动）
 INSERT OR IGNORE INTO account (phone, owner_name, balance, real_time_fee, bill_cycle, updated_at)
 VALUES ('13800138000', '张伟', 86.50, 113.50, '2026-09', '2026-09-30T08:00:00+00:00');

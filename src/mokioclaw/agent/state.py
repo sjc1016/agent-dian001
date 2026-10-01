@@ -44,7 +44,8 @@ class ConfirmationRequest(TypedDict, total=False):
 class AgentSubState(TypedDict, total=False):
     # ---- 输入 ----
     query: str
-    session_context: str
+    session_context: str  # 旧版记忆层文本（兼容保留）
+    memory_context: str  # 阶段 5：主图预渲染的四层记忆文本（短期窗口+长期摘要）
     phone: str
     workspace: str
     approval_mode: str  # inline / auto / deny

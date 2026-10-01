@@ -25,6 +25,7 @@ from mokioclaw.core.session import (
 )
 from mokioclaw.core.state import RuntimeState
 from mokioclaw.core.trace import TraceRecorder, normalize_trace_mode
+from mokioclaw.graph.profile_store import aconsolidate_user_profile, aget_user_profile
 from mokioclaw.graph.workflow import build_complex_workflow, build_entry_workflow
 from mokioclaw.skills.business_store import DEFAULT_DEMO_PHONE
 
@@ -199,6 +200,25 @@ async def _stream_session_events_native(
     if not task:
         return
 
+    # 阶段 5（P5-8）：按手机号装载跨会话长期用户摘要，注入长期记忆层
+    bound_phone = str(phone or DEFAULT_DEMO_PHONE)
+    user_profile = await aget_user_profile(bound_phone)
+    yield {
+        "type": "custom_event",
+        "event": {
+            "type": "profile_loaded",
+            "phone": bound_phone,
+            "exists": user_profile is not None,
+            "topics": list((user_profile or {}).get("topics") or []),
+            "open_tickets": list((user_profile or {}).get("open_tickets") or []),
+            "preferred_package": (user_profile or {}).get("preferred_package", ""),
+        },
+    }
+
+    # 短期窗口只含本轮之前的历史轮次（当前问题经 task 单独传递）：
+    # 否则首轮也会出现长度为 1 的"窗口"，导致查询重写误判为多轮、白调一次模型
+    prior_turns = list(session.get("recent_turns", []) or [])
+
     turn = append_user_turn(session, task)
     await asave_session(workspace, session)
     yield {"type": "custom_event", "event": session_turn_started_event(workspace, session, turn=turn, task=task)}
@@ -214,9 +234,12 @@ async def _stream_session_events_native(
         "clarify_count": int(session.get("clarify_count", 0) or 0),
         "unknown_count": int(session.get("unknown_count", 0) or 0),
         "pending_slots": list(session.get("pending_slots", []) or []),
+        # 阶段 5：短期会话窗口 + 跨会话长期摘要（四层记忆装配）
+        "recent_turns": prior_turns,
+        "user_profile": user_profile or {},
         # 阶段 4：业务 Agent 子图入参
         "workspace": str(workspace),
-        "phone": str(phone or DEFAULT_DEMO_PHONE),
+        "phone": bound_phone,
         "approval_mode": approval_mode,
         "max_attempts": max_attempts,
     }
@@ -272,6 +295,40 @@ async def _stream_session_events_native(
     append_assistant_turn(session, turn=turn, route=route, content=response, summary=response)
     await asave_session(workspace, session)
     yield {"type": "custom_event", "event": session_turn_saved_event(workspace, session, turn=turn, route=route)}
+
+    # 阶段 5（P5-7）：回合落库后增量压缩为跨会话长期摘要（水位内幂等；失败不阻断对话）
+    if _profile_auto_compress():
+        try:
+            profile = await aconsolidate_user_profile(
+                bound_phone,
+                workspace=str(workspace),
+                session=session,
+                route=route,
+                response=response,
+                tool_traces=list(entry_state.get("tool_traces") or []),
+            )
+            yield {
+                "type": "custom_event",
+                "event": {
+                    "type": "profile_updated",
+                    "phone": bound_phone,
+                    "topics": list(profile.get("topics") or []),
+                    "open_tickets": list(profile.get("open_tickets") or []),
+                    "preferred_package": profile.get("preferred_package", ""),
+                    "turn_count": int(profile.get("turn_count", 0) or 0),
+                    "compression": profile.get("compression", ""),
+                },
+            }
+        except Exception as exc:  # noqa: BLE001 —— 长期记忆压缩失败永不影响主链路
+            yield {
+                "type": "custom_event",
+                "event": {"type": "profile_update_error", "error": f"{type(exc).__name__}: {exc}"},
+            }
+
+
+def _profile_auto_compress() -> bool:
+    """是否在回合结束后自动压缩长期摘要（PROFILE_AUTO_COMPRESS=0 可关）。"""
+    return os.getenv("PROFILE_AUTO_COMPRESS", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 async def _aiter_sync(iterator: Iterator[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:

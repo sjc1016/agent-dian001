@@ -12,7 +12,7 @@
 | 阶段 2 | 意图识别与任务调度 | 10 | ✅ 完成 |
 | 阶段 3 | RAG 检索子图（LangGraph） | 22 | ✅ 完成（5 条验收门过 4 条，P95 见下方实测） |
 | 阶段 4 | Skill 工具集 + Agent 推理引擎 | 17 | ✅ 完成（4 条验收门全部通过，194 测试全绿） |
-| 阶段 5 | 多轮记忆与查询重写 | 9 | ⬜ 未开始 |
+| 阶段 5 | 多轮记忆与查询重写 | 9 | ✅ 完成（2 条验收门全部通过，211 测试全绿） |
 | 阶段 6 | 自动化评测流水线 | 8 | ⬜ 未开始 |
 | 阶段 7 | 收尾与演示打磨 | 4 | ⬜ 未开始 |
 | **合计** | | **90** | |
@@ -166,19 +166,19 @@
 
 **目标**：指代消解生效，分层记忆完整，跨会话可恢复用户摘要。
 
-- [ ] **P5-1** 新增 `query_rewrite_node`，置于 intent_router 之前
-- [ ] **P5-2** 重写 prompt：输入短期窗口 + 当前问题，输出独立完整问句
-- [ ] **P5-3** 无指代/省略时原样透传（prompt 判定 + 单测覆盖）
-- [ ] **P5-4** 改造 [graph/memory.py](./src/mokioclaw/graph/memory.py)：working 层 = 短期会话窗口 + 当前意图 + 待确认槽位
-- [ ] **P5-5** history 层 = 长期用户摘要（历史咨询主题、在办工单、偏好套餐）；新增检索证据层
-- [ ] **P5-6** SQLite 建 `user_profile` 表
-- [ ] **P5-7** 会话结束时由压缩机制生成长期摘要并落库
-- [ ] **P5-8** 新会话开始时装载对应用户的长期摘要
-- [ ] **P5-9** 统一四层提示词组装入口（系统提示词 → 记忆 → 证据 → 用户问题），各节点共用
+- [x] **P5-1** 新增 `query_rewrite_node`，置于 intent_router 之前（主图 START→query_rewrite→intent_router）
+- [x] **P5-2** 重写 prompt：输入短期窗口 + 当前问题，输出独立完整问句（[prompts/memory.py](./src/mokioclaw/prompts/memory.py) `QUERY_REWRITE_PROMPT`，JSON 协议 `{changed, rewritten, reason}`）
+- [x] **P5-3** 无指代/省略时原样透传（prompt 判定 + 单测覆盖：首轮无窗口不调模型、changed=false、模型异常/非法 JSON 均安全透传）
+- [x] **P5-4** 改造 [graph/memory.py](./src/mokioclaw/graph/memory.py)：working 层 = 短期会话窗口 + 当前意图 + 待确认槽位（`build_customer_memory`）
+- [x] **P5-5** history 层 = 长期用户摘要（历史咨询主题、在办工单、偏好套餐）；新增检索证据层
+- [x] **P5-6** SQLite 建 `user_profile` 表（phone 主键，[schema.sql](./src/mokioclaw/db/schema.sql) + [models.py](./src/mokioclaw/db/models.py) `UserProfileModel`）
+- [x] **P5-7** 会话结束时由压缩机制生成长期摘要并落库（[graph/profile_store.py](./src/mokioclaw/graph/profile_store.py) 增量压缩，turn_count 水位幂等；LLM 优先，异常退化为规则合并；core/agent 回合闭环后触发，`PROFILE_AUTO_COMPRESS=0` 可关）
+- [x] **P5-8** 新会话开始时装载对应用户的长期摘要（按手机号维度跨 workspace，`profile_loaded` 事件；注入主图 user_profile 层）
+- [x] **P5-9** 统一四层提示词组装入口（系统提示词 → 记忆 → 证据 → 用户问题），各节点共用（`assemble_layered_messages`/`compose_layered_content`；router/clarify/RAG generate/Agent think+finalize 全部收口）
 
 **🚪 阶段 5 验收门**
-- [ ] 剧本"查 5G 套餐 → 那这个多少钱 → 帮我办这个"：第 2 轮指代正确重写；第 3 轮路由到办理 Agent 且槽位自动带出套餐名
-- [ ] 跨会话重开后能记起历史咨询主题
+- [x] 剧本"查 5G 套餐 → 那这个多少钱 → 帮我办这个"：第 2 轮指代正确重写；第 3 轮路由到办理 Agent 且槽位自动带出套餐名（test_stage5_memory 三剧本图级用例：第 2 轮 rewritten="5G畅享129元档套餐月费多少钱"，第 3 轮 agent_thinking.calls 的 change_package.target_package="5G畅享129元档" 并出确认卡片）
+- [x] 跨会话重开后能记起历史咨询主题（同手机号新 workspace：profile_loaded.exists=true，customer_memory_snapshot 带历史 topics 与偏好套餐）
 
 ---
 
@@ -259,4 +259,9 @@
 | 2026-10-01 | P4-16 | 跨轮确认的状态回写时序：approval_entry 确认分支最初返回 `pending_approval: None`，导致随后的 act_node 读不到 approval_id，确认单永远停在 pending。正确做法是 entry 保留 pending → act 执行后按结果回写 executed/failed 并清空；取消/新诉求分支才在 entry 立即置 cancelled。意图路由前置短路（_load_pending_approval + 确认/取消关键词识别）保证第二轮「确认办理」不经过 LLM 分类直达 Agent 子图。 |
 | 2026-10-01 | P4-13 | asyncio.gather 多工具并行的真实语义：建单与查单并发时查状态不保证读到本轮新单（提交时序竞争），验收以「两工具均成功 + 建单结果自带工单号 + 号码维度历史单可见」为准；act_node 对 gather 结果再按 calls 顺序排序，保证 tool_traces 与调用顺序一致。 |
 | 2026-10-01 | P4 测试 | AgentSubState 是 TypedDict 通道白名单：节点返回但 schema 未声明的键（chat_response/final_answer）会被 LangGraph 从最终 state 丢弃（astream updates 流里仍可见，主图靠累积 updates 取 answer 不受影响）。已在 state 显式声明输出通道与测试注入键 `_registry`。新增测试 47 条（test_skills 16 / test_skill_registry 10 / test_agent_subgraph 16 / test_api_e2e 5），全量 194 条通过。 |
+| 2026-10-01 | P5-1/3 | 首轮"假窗口"陷阱：会话流先 `append_user_turn` 再注入 entry_state，若直接取 `session["recent_turns"]`，首轮窗口长度为 1（含本轮用户原话），query_rewrite 会误判为多轮、每轮首轮白调一次模型。修复：注入前快照 `prior_turns`（本轮之前的轮次）。同时 `_short_term_window` 只在 state **缺少** recent_turns 键时才从 session_context JSON 兜底——显式空列表 `[]` 代表"首轮无历史"，不能被含本轮的 session_context 覆盖（跨会话测试 window_turns 断言暴露此问题）。 |
+| 2026-10-01 | P5-1/P4-16 | 审批短路与重写的优先级：pending approval 存在时，"确认/取消"必须用**原始 task** 做规则判定（重写模型可能把"确认办理"改写后破坏关键词）；只有 LLM 意图分类的输入用 rewritten_task。intent_decision 事件同时记录 original_input/rewrite_changed 便于评测。 |
+| 2026-10-01 | P5-7 | 长期摘要压缩必须有无 LLM 兜底：测试/离线环境 create_model 直接抛错，`_rule_based_merge` 以工具轨迹（skill_call→主题映射、args 提套餐名、report_fault 结果提工单）为强信号 + 路由兜底主题 + 正则抽套餐名，保证跨会话记忆永不依赖外部模型；turn_count 水位内幂等返回，不重复压缩。压缩/落库异常在会话流内被吞成 profile_update_error 事件，绝不阻断主对话。 |
+| 2026-10-01 | P5-9 | 子图与主图状态解耦：RAG/Agent 子图不直接读主图 state，由 query_rewrite 首次装配时预渲染 memory_text，主图节点经 sub_input 的 `memory_context` 透传；子图节点缺省时回退旧 session_context 标签。legacy complex workflow 仍用旧 build_layered_memory（planner/verifier 依赖），两套入口并存不删旧。 |
+| 2026-10-01 | P5 测试 | 验收门断言点：写操作（change_package）的人工确认卡片在 Skill **执行之前**短路，事件流只有 agent_thinking→agent_confirm_required，没有 skill_call/skill_result；槽位是否带出套餐名要断言 `agent_thinking.calls[].args.target_package` 而非 skill_call。新增 test_stage5_memory.py 17 条（重写透传/异常 6 + 四层组装 4 + profile 仓储/压缩 5 + 三剧本 1 + 跨会话 1），全量 211 条通过。 |
 | | | |

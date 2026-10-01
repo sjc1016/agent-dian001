@@ -47,7 +47,8 @@ class RagSubState(TypedDict, total=False):
     query: str  # 本轮实际检索用问句（首轮=主图传入，重写后被替换）
     original_query: str  # 用户原始问句（生成节点展示用）
     rewritten_query: str  # rewrite_once 产出的放宽问句
-    session_context: str  # 记忆层（短期会话窗口 JSON，阶段 5 扩展为四层组装）
+    session_context: str  # 旧版记忆层文本（兼容保留）
+    memory_context: str  # 阶段 5：主图预渲染的四层记忆文本（短期窗口+长期摘要）
     # 并行两路召回
     bm25_hits: list[Hit]
     dense_hits: list[Hit]

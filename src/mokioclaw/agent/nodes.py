@@ -27,6 +27,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
 
 from mokioclaw.core.approval import ApprovalRequest, make_approval_request
+from mokioclaw.graph.memory import compose_layered_content
 from mokioclaw.prompts.agent import (
     AGENT_FALLBACK_REPLY,
     AGENT_REFLECT_ERROR_REPLY,
@@ -243,19 +244,33 @@ def _build_think_messages(state: AgentSubState, registry: SkillRegistry) -> list
             )
         system_prompt += "\n".join(lines)
 
-    sections = [f"【用户诉求】\n{state.get('query', '')}"]
-    session_context = str(state.get("session_context") or "").strip()
-    if session_context:
-        sections.append("【会话记忆（近期对话，仅供理解指代，勿泄露原始 JSON）】\n" + session_context)
+    extra_sections: list[str] = []
     phone = str(state.get("phone") or DEFAULT_DEMO_PHONE)
-    sections.append(f"【当前会话绑定号码】\n{phone}（用户未显式提供号码时查询/办理该号码）")
+    extra_sections.append(f"【当前会话绑定号码】\n{phone}（用户未显式提供号码时查询/办理该号码）")
     hint = str(state.get("verify_hint") or "").strip()
     if hint:
-        sections.append(
+        extra_sections.append(
             f"【上轮反思校验未通过，请据此修正】\n{hint}\n"
             "（可修正参数后重新调用工具，或补充调用其他工具核实）"
         )
-    return [SystemMessage(content=system_prompt), HumanMessage(content="\n\n".join(sections))]
+    # 四层组装：记忆（短期窗口+长期摘要）→ 附加信息 → 用户诉求（P5-9）
+    content = compose_layered_content(
+        question=str(state.get("query", "")),
+        memory_text=_agent_memory_text(state),
+        extra_sections=extra_sections,
+    )
+    return [SystemMessage(content=system_prompt), HumanMessage(content=content)]
+
+
+def _agent_memory_text(state: AgentSubState) -> str:
+    """记忆层文本：优先主图预渲染的四层记忆，缺省时回退旧 session_context。"""
+    memory_text = str(state.get("memory_context") or "").strip()
+    if memory_text:
+        return memory_text
+    session_context = str(state.get("session_context") or "").strip()
+    if session_context:
+        return "【会话记忆（近期对话，仅供理解指代，勿泄露原始 JSON）】\n" + session_context
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -604,7 +619,6 @@ def agent_fallback_node(state: AgentSubState) -> dict[str, Any]:
 
 
 def _respond_payload(state: AgentSubState, results: list[dict[str, Any]]) -> str:
-    sections = [f"【用户诉求】\n{state.get('query', '')}"]
     data_lines = []
     for item in results:
         if item.get("ok"):
@@ -617,11 +631,12 @@ def _respond_payload(state: AgentSubState, results: list[dict[str, Any]]) -> str
                 f"工具 {item.get('name')} 失败：{item.get('error', '')}"
                 "（如无法挽救请礼貌建议联系 10000 号人工客服）"
             )
-    sections.append("【业务工具返回（答复只能基于以下数据）】\n" + "\n\n".join(data_lines))
-    session_context = str(state.get("session_context") or "").strip()
-    if session_context:
-        sections.append("【会话记忆】\n" + session_context)
-    return "\n\n".join(sections)
+    # 四层组装：记忆 → 业务工具返回（证据层）→ 用户诉求（P5-9）
+    return compose_layered_content(
+        question=str(state.get("query", "")),
+        memory_text=_agent_memory_text(state),
+        extra_sections=["【业务工具返回（答复只能基于以下数据）】\n" + "\n\n".join(data_lines)],
+    )
 
 
 # ---------------------------------------------------------------------------

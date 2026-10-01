@@ -129,3 +129,24 @@ class PendingApprovalModel(Base):
     status: Mapped[str] = mapped_column(nullable=False, default="pending")
     created_at: Mapped[str] = mapped_column(nullable=False)
     updated_at: Mapped[str] = mapped_column(nullable=False)
+
+
+class UserProfileModel(Base):
+    """阶段 5：跨会话长期用户摘要（按号码维度）。
+
+    ``topics`` / ``open_tickets`` 以 JSON 文本存储；``turn_count`` 为已压缩
+    进摘要的轮次水位，增量压缩时只处理水位之后的新轮次。
+    """
+
+    __tablename__ = "user_profile"
+
+    phone: Mapped[str] = mapped_column(primary_key=True)
+    owner_name: Mapped[str] = mapped_column(nullable=False, default="")
+    summary: Mapped[str] = mapped_column(nullable=False, default="")
+    topics: Mapped[str] = mapped_column(nullable=False, default="[]")
+    open_tickets: Mapped[str] = mapped_column(nullable=False, default="[]")
+    preferred_package: Mapped[str] = mapped_column(nullable=False, default="")
+    turn_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    last_session_workspace: Mapped[str] = mapped_column(nullable=False, default="")
+    created_at: Mapped[str] = mapped_column(nullable=False)
+    updated_at: Mapped[str] = mapped_column(nullable=False)
