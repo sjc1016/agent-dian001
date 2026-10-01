@@ -399,7 +399,8 @@ def test_stream_session_events_chat_writes_session_without_harness(monkeypatch, 
     assert "session_started" in custom_types
     assert "session_turn_saved" in custom_types
     assert not (tmp_path / ".mokioclaw" / "checkpoints").exists()
-    assert not (tmp_path / ".mokioclaw" / "traces").exists()
+    # 阶段 6 起原生 async 路径也写 trace（trace_mode="on"）
+    assert (tmp_path / ".mokioclaw" / "traces").exists()
     # 会话状态已持久化到 SQLite（不再写 session.json）
     reloaded = load_or_create_session(tmp_path)
     assert reloaded["turn_index"] == 1

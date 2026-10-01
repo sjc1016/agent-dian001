@@ -13,7 +13,7 @@
 | 阶段 3 | RAG 检索子图（LangGraph） | 22 | ✅ 完成（5 条验收门过 4 条，P95 见下方实测） |
 | 阶段 4 | Skill 工具集 + Agent 推理引擎 | 17 | ✅ 完成（4 条验收门全部通过，194 测试全绿） |
 | 阶段 5 | 多轮记忆与查询重写 | 9 | ✅ 完成（2 条验收门全部通过，211 测试全绿） |
-| 阶段 6 | 自动化评测流水线 | 8 | ⬜ 未开始 |
+| 阶段 6 | 自动化评测流水线 | 8 | ✅ 完成（3 条验收门全部通过，225 测试全绿） |
 | 阶段 7 | 收尾与演示打磨 | 4 | ⬜ 未开始 |
 | **合计** | | **90** | |
 
@@ -186,19 +186,19 @@
 
 **目标**：一键跑评测，自动输出含规则校验与 LLM-Judge 的报告。
 
-- [ ] **P6-1** 扩展 [core/trace.py](./src/mokioclaw/core/trace.py)：记录意图判定、RAG 召回 Top-K、工具入参出参、反思校验结论
-- [ ] **P6-2** `eval/collector.py`：从 trace 采集会话轨迹
-- [ ] **P6-3** `eval/normalizer.py`：归一化为标准评测样本（输入/期望/实际轨迹/工具调用序列）
-- [ ] **P6-4** `eval/rule_checks.py`：分流正确性、工具参数合法性、兜底触发、追问 ≤5 轮断言
-- [ ] **P6-5** `eval/llm_judge.py`：答案质量、推理逻辑、话术合规性 1~5 分 + 评语
-- [ ] **P6-6** `eval/report.py`：生成 Markdown 报告（通过率、分项得分、失败归因、轨迹回链）到 `eval/reports/`
-- [ ] **P6-7** 准备 30 条标注评测集（四类业务 + 模糊 + 无关）
-- [ ] **P6-8** 接口：`POST /api/v1/eval/run`、`GET /api/v1/eval/reports/{id}`
+- [x] **P6-1** 扩展 [core/trace.py](./src/mokioclaw/core/trace.py)：记录意图判定、RAG 召回 Top-K、工具入参出参、反思校验结论
+- [x] **P6-2** `eval/collector.py`：从 trace 采集会话轨迹
+- [x] **P6-3** `eval/normalizer.py`：归一化为标准评测样本（输入/期望/实际轨迹/工具调用序列）
+- [x] **P6-4** `eval/rule_checks.py`：分流正确性、工具参数合法性、兜底触发、追问 ≤5 轮断言
+- [x] **P6-5** `eval/llm_judge.py`：答案质量、推理逻辑、话术合规性 1~5 分 + 评语
+- [x] **P6-6** `eval/report.py`：生成 Markdown 报告（通过率、分项得分、失败归因、轨迹回链）到 `eval/reports/`
+- [x] **P6-7** 准备 30 条标注评测集（四类业务 + 模糊 + 无关）
+- [x] **P6-8** 接口：`POST /api/v1/eval/run`、`GET /api/v1/eval/reports/{id}`
 
 **🚪 阶段 6 验收门**
-- [ ] 评测集一键跑完自动出报告
-- [ ] 报告含通过率、LLM-Judge 分项得分、失败用例归因
-- [ ] 每条失败用例可回链原始轨迹
+- [x] 评测集一键跑完自动出报告
+- [x] 报告含通过率、LLM-Judge 分项得分、失败用例归因
+- [x] 每条失败用例可回链原始轨迹
 
 ---
 
@@ -219,8 +219,8 @@
 - [ ] 4. Agent 链路有完整"思考→调用工具→反思校验"轨迹
 - [ ] 5. Skill 热插拔：运行中增删工具目录，不重启即生效
 - [ ] 6. 指代消解：多轮指代问题被正确重写并路由
-- [ ] 7. 评测流水线一键运行，自动输出含规则校验 + LLM-Judge 的报告
-- [ ] 8. `uv run pytest -q` 全绿
+- [x] 7. 评测流水线一键运行，自动输出含规则校验 + LLM-Judge 的报告
+- [x] 8. `uv run pytest -q` 全绿
 
 ---
 
@@ -264,4 +264,9 @@
 | 2026-10-01 | P5-7 | 长期摘要压缩必须有无 LLM 兜底：测试/离线环境 create_model 直接抛错，`_rule_based_merge` 以工具轨迹（skill_call→主题映射、args 提套餐名、report_fault 结果提工单）为强信号 + 路由兜底主题 + 正则抽套餐名，保证跨会话记忆永不依赖外部模型；turn_count 水位内幂等返回，不重复压缩。压缩/落库异常在会话流内被吞成 profile_update_error 事件，绝不阻断主对话。 |
 | 2026-10-01 | P5-9 | 子图与主图状态解耦：RAG/Agent 子图不直接读主图 state，由 query_rewrite 首次装配时预渲染 memory_text，主图节点经 sub_input 的 `memory_context` 透传；子图节点缺省时回退旧 session_context 标签。legacy complex workflow 仍用旧 build_layered_memory（planner/verifier 依赖），两套入口并存不删旧。 |
 | 2026-10-01 | P5 测试 | 验收门断言点：写操作（change_package）的人工确认卡片在 Skill **执行之前**短路，事件流只有 agent_thinking→agent_confirm_required，没有 skill_call/skill_result；槽位是否带出套餐名要断言 `agent_thinking.calls[].args.target_package` 而非 skill_call。新增 test_stage5_memory.py 17 条（重写透传/异常 6 + 四层组装 4 + profile 仓储/压缩 5 + 三剧本 1 + 跨会话 1），全量 211 条通过。 |
+| 2026-10-01 | P6-1 | 原生 async 路径此前不持久化 trace（仅 legacy complex workflow 通过 TraceRecorder 写），导致评测无轨迹可采。新增 `SessionTraceRecorder`（async、不依赖 RuntimeState），在 `_stream_session_events_native` 内 try/finally 包裹，记录 intent_decision/rag_retrieve/rag_rerank/rag_gate/skill_call/skill_result/agent_reflect/clarify_question/fallback_reply/agent_answer/rag_answer/rag_fallback/agent_fallback，写 `events.jsonl`+`summary.json` 到 `{workspace}/.mokioclaw/traces/{trace_id}/`。文件写入用 `asyncio.to_thread` 避免阻塞事件循环。 |
+| 2026-10-01 | P6-4 | 工具参数校验必须复用 SkillRegistry：每条 skill_call 按 registry 里的 manifest 校验 required 参数与枚举值，而非硬编码白名单。这样新增 Skill 自动纳入评测，零配置。 |
+| 2026-10-01 | P6-5 | LLM-Judge 退化：`create_model` 在函数内延迟 import（来自 `mokioclaw.providers.openai_provider`），模型不可用时回退规则评分（`fallback=True`）。测试 monkeypatch 目标必须是 `mokioclaw.providers.openai_provider.create_model`（import 源），而非 `llm_judge` 模块级名。 |
+| 2026-10-01 | P6- runner | 评测 runner 用 `approval_mode="auto"` 避免人工确认阻塞；DB 引擎是进程单例，runner 测试结束必须 `dispose_engine()`，否则后续测试 `load_or_create_session` 会读到上一个测试的 DB 路径（session 存错库，跨轮计数断言失败）。 |
+| 2026-10-01 | P6 测试 | 新增 tests/test_eval_pipeline.py 14 条（collector/normalizer/rule_checks 4 + llm_judge 2 + report 2 + dataset 1 + runner 端到端 1 + API 3 + trace recorder 1），全量 225 条通过。端到端 runner 用 stub 模型跑通 balance 查询，rule_checks 全绿，llm_judge 退化路径正常。 |
 | | | |

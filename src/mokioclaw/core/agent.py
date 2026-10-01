@@ -24,7 +24,7 @@ from mokioclaw.core.session import (
     session_turn_started_event,
 )
 from mokioclaw.core.state import RuntimeState
-from mokioclaw.core.trace import TraceRecorder, normalize_trace_mode
+from mokioclaw.core.trace import SessionTraceRecorder, TraceRecorder, normalize_trace_mode
 from mokioclaw.graph.profile_store import aconsolidate_user_profile, aget_user_profile
 from mokioclaw.graph.workflow import build_complex_workflow, build_entry_workflow
 from mokioclaw.skills.business_store import DEFAULT_DEMO_PHONE
@@ -192,28 +192,36 @@ async def _stream_session_events_native(
     """
     workspace = (resume_workspace or session_workspace or default_workspace()).expanduser()
     workspace.mkdir(parents=True, exist_ok=True)
+    # 阶段 6（P6-1）：原生 async 会话路径的 trace 持久化（供评测流水线采集）
+    trace = SessionTraceRecorder(
+        workspace,
+        task=task or "",
+        mode=trace_mode or os.getenv("MOKIO_TRACE_MODE", "on"),
+    )
     session = await aload_or_create_session(workspace)
     resumed = resume_workspace is not None
-    yield {"type": "custom_event", "event": session_started_event(workspace, session, resumed=resumed)}
+    started_event = session_started_event(workspace, session, resumed=resumed)
+    await trace.record_event(started_event)
+    yield {"type": "custom_event", "event": started_event}
     yield {"type": "workspace", "path": str(workspace)}
 
     if not task:
+        await trace.end(status="finished")
         return
 
     # 阶段 5（P5-8）：按手机号装载跨会话长期用户摘要，注入长期记忆层
     bound_phone = str(phone or DEFAULT_DEMO_PHONE)
     user_profile = await aget_user_profile(bound_phone)
-    yield {
-        "type": "custom_event",
-        "event": {
-            "type": "profile_loaded",
-            "phone": bound_phone,
-            "exists": user_profile is not None,
-            "topics": list((user_profile or {}).get("topics") or []),
-            "open_tickets": list((user_profile or {}).get("open_tickets") or []),
-            "preferred_package": (user_profile or {}).get("preferred_package", ""),
-        },
+    profile_event = {
+        "type": "profile_loaded",
+        "phone": bound_phone,
+        "exists": user_profile is not None,
+        "topics": list((user_profile or {}).get("topics") or []),
+        "open_tickets": list((user_profile or {}).get("open_tickets") or []),
+        "preferred_package": (user_profile or {}).get("preferred_package", ""),
     }
+    await trace.record_event(profile_event)
+    yield {"type": "custom_event", "event": profile_event}
 
     # 短期窗口只含本轮之前的历史轮次（当前问题经 task 单独传递）：
     # 否则首轮也会出现长度为 1 的"窗口"，导致查询重写误判为多轮、白调一次模型
@@ -221,7 +229,9 @@ async def _stream_session_events_native(
 
     turn = append_user_turn(session, task)
     await asave_session(workspace, session)
-    yield {"type": "custom_event", "event": session_turn_started_event(workspace, session, turn=turn, task=task)}
+    turn_started_event = session_turn_started_event(workspace, session, turn=turn, task=task)
+    await trace.record_event(turn_started_event)
+    yield {"type": "custom_event", "event": turn_started_event}
     session_context = await asyncio.to_thread(build_session_context, workspace, session)
 
     entry_state: dict[str, Any] = {
@@ -245,71 +255,76 @@ async def _stream_session_events_native(
     }
 
     route = "workflow"
-    async for mode, event in build_entry_workflow().astream(
-        entry_state, stream_mode=["updates", "custom"]
-    ):
-        if mode == "custom":
-            yield {"type": "custom_event", "event": event}
-            if isinstance(event, dict) and event.get("type") == "intent_decision":
-                route = str(event.get("route") or "workflow")
-        else:
-            _merge_graph_update(entry_state, event)
-            yield {"type": "graph_event", "event": event}
-
-    if route == "workflow":
-        # 遗留路径：仅旧 complex 工作流（planner/verifier 同步图）仍从此进入。
-        # 客服五类意图永远不会路由到这里；该分支用 to_thread 驱动同步迭代器，
-        # 不影响主链路的原生 async 性质。
-        final_answer = ""
-        complex_events = _stream_complex_workflow(
-            task=task,
-            workspace=workspace,
-            max_attempts=max_attempts,
-            approval_mode=approval_mode,
-            approval_handler=None,
-            checkpoint_mode=checkpoint_mode,
-            resume_workspace=resume_workspace,
-            trace_mode=trace_mode,
-            session=session,
-            turn=turn,
-            session_context=session_context,
-        )
-        async for event in _aiter_sync(complex_events):
-            final_answer = _final_answer_from_event(event) or final_answer
-            yield event
-        append_assistant_turn(
-            session, turn=turn, route="workflow", content=final_answer, summary=final_answer
-        )
-        await asave_session(workspace, session)
-        yield {
-            "type": "custom_event",
-            "event": session_turn_saved_event(workspace, session, turn=turn, route="workflow"),
-        }
-        return
-
-    # 五类意图全部在入口图内完成（rag_answer / agent_loop / clarify / fallback）
-    response = str(entry_state.get("final_answer") or entry_state.get("chat_response") or "")
-    session["clarify_count"] = int(entry_state.get("clarify_count", 0) or 0)
-    session["unknown_count"] = int(entry_state.get("unknown_count", 0) or 0)
-    session["pending_slots"] = list(entry_state.get("pending_slots", []) or [])
-    append_assistant_turn(session, turn=turn, route=route, content=response, summary=response)
-    await asave_session(workspace, session)
-    yield {"type": "custom_event", "event": session_turn_saved_event(workspace, session, turn=turn, route=route)}
-
-    # 阶段 5（P5-7）：回合落库后增量压缩为跨会话长期摘要（水位内幂等；失败不阻断对话）
-    if _profile_auto_compress():
+    trace_status = "finished"
+    try:
         try:
-            profile = await aconsolidate_user_profile(
-                bound_phone,
-                workspace=str(workspace),
+            async for mode, event in build_entry_workflow().astream(
+                entry_state, stream_mode=["updates", "custom"]
+            ):
+                if mode == "custom":
+                    await trace.record_event(event if isinstance(event, dict) else {"type": str(event)})
+                    yield {"type": "custom_event", "event": event}
+                    if isinstance(event, dict) and event.get("type") == "intent_decision":
+                        route = str(event.get("route") or "workflow")
+                else:
+                    await trace.record_graph_update(event)
+                    _merge_graph_update(entry_state, event)
+                    yield {"type": "graph_event", "event": event}
+        except Exception:
+            trace_status = "interrupted"
+            raise
+
+        if route == "workflow":
+            # 遗留路径：仅旧 complex 工作流（planner/verifier 同步图）仍从此进入。
+            final_answer = ""
+            complex_events = _stream_complex_workflow(
+                task=task,
+                workspace=workspace,
+                max_attempts=max_attempts,
+                approval_mode=approval_mode,
+                approval_handler=None,
+                checkpoint_mode=checkpoint_mode,
+                resume_workspace=resume_workspace,
+                trace_mode=trace_mode,
                 session=session,
-                route=route,
-                response=response,
-                tool_traces=list(entry_state.get("tool_traces") or []),
+                turn=turn,
+                session_context=session_context,
             )
-            yield {
-                "type": "custom_event",
-                "event": {
+            async for event in _aiter_sync(complex_events):
+                final_answer = _final_answer_from_event(event) or final_answer
+                yield event
+            append_assistant_turn(
+                session, turn=turn, route="workflow", content=final_answer, summary=final_answer
+            )
+            await asave_session(workspace, session)
+            saved_event = session_turn_saved_event(workspace, session, turn=turn, route="workflow")
+            await trace.record_event(saved_event)
+            yield {"type": "custom_event", "event": saved_event}
+            return
+
+        # 五类意图全部在入口图内完成（rag_answer / agent_loop / clarify / fallback）
+        response = str(entry_state.get("final_answer") or entry_state.get("chat_response") or "")
+        session["clarify_count"] = int(entry_state.get("clarify_count", 0) or 0)
+        session["unknown_count"] = int(entry_state.get("unknown_count", 0) or 0)
+        session["pending_slots"] = list(entry_state.get("pending_slots") or [])
+        append_assistant_turn(session, turn=turn, route=route, content=response, summary=response)
+        await asave_session(workspace, session)
+        saved_event = session_turn_saved_event(workspace, session, turn=turn, route=route)
+        await trace.record_event(saved_event)
+        yield {"type": "custom_event", "event": saved_event}
+
+        # 阶段 5（P5-7）：回合落库后增量压缩为跨会话长期摘要（水位内幂等；失败不阻断对话）
+        if _profile_auto_compress():
+            try:
+                profile = await aconsolidate_user_profile(
+                    bound_phone,
+                    workspace=str(workspace),
+                    session=session,
+                    route=route,
+                    response=response,
+                    tool_traces=list(entry_state.get("tool_traces") or []),
+                )
+                prof_event = {
                     "type": "profile_updated",
                     "phone": bound_phone,
                     "topics": list(profile.get("topics") or []),
@@ -317,13 +332,15 @@ async def _stream_session_events_native(
                     "preferred_package": profile.get("preferred_package", ""),
                     "turn_count": int(profile.get("turn_count", 0) or 0),
                     "compression": profile.get("compression", ""),
-                },
-            }
-        except Exception as exc:  # noqa: BLE001 —— 长期记忆压缩失败永不影响主链路
-            yield {
-                "type": "custom_event",
-                "event": {"type": "profile_update_error", "error": f"{type(exc).__name__}: {exc}"},
-            }
+                }
+                await trace.record_event(prof_event)
+                yield {"type": "custom_event", "event": prof_event}
+            except Exception as exc:  # noqa: BLE001
+                err_event = {"type": "profile_update_error", "error": f"{type(exc).__name__}: {exc}"}
+                await trace.record_event(err_event)
+                yield {"type": "custom_event", "event": err_event}
+    finally:
+        await trace.end(status=trace_status)
 
 
 def _profile_auto_compress() -> bool:

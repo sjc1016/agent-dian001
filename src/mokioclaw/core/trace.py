@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import asdict, is_dataclass
@@ -19,6 +20,36 @@ TIMELINE_FILE = "timeline.md"
 MAX_PAYLOAD_TEXT = 1200
 TIMELINE_HEAD_ITEMS = 40
 TIMELINE_TAIL_ITEMS = 80
+
+
+# 阶段 6：评测流水线消费的关键事件类型（供 collector/normalizer 过滤）
+EVAL_KEY_EVENT_TYPES = frozenset(
+    {
+        "intent_decision",
+        "clarify_question",
+        "fallback_reply",
+        "query_rewrite",
+        "rag_start",
+        "rag_retrieve",
+        "rag_fusion",
+        "rag_rerank",
+        "rag_gate",
+        "rag_parent_lookup",
+        "rag_rewrite",
+        "rag_answer",
+        "rag_fallback",
+        "rag_finished",
+        "agent_start",
+        "agent_thinking",
+        "skill_call",
+        "skill_result",
+        "agent_reflect",
+        "agent_answer",
+        "agent_fallback",
+        "agent_confirm_required",
+        "session_turn_saved",
+    }
+)
 
 
 def normalize_trace_mode(mode: str | None) -> str:
@@ -309,3 +340,124 @@ def _trim_nested(value: Any, *, limit: int) -> Any:
 def _new_trace_id() -> str:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"trace-{stamp}-{uuid4().hex[:6]}"
+
+
+# ---------------------------------------------------------------------------
+# 阶段 6：原生 async 会话路径的 trace 记录器（不依赖 RuntimeState）
+# ---------------------------------------------------------------------------
+
+
+class SessionTraceRecorder:
+    """为 ``_stream_session_events_native`` 提供轻量 trace 持久化。
+
+    与 :class:`TraceRecorder` 的区别：
+    - 不需要 ``RuntimeState``，仅需 workspace 路径；
+    - 文件写入卸载到 ``asyncio.to_thread``，避免阻塞事件循环；
+    - 只记录评测流水线关心的关键事件（intent / rag / skill / reflect），
+      其余会话生命周期事件（session_started 等）也写入但不影响评测。
+
+    输出目录：``{workspace}/.mokioclaw/traces/{trace_id}/``，
+    内含 ``events.jsonl``、``summary.json``（结束时生成）。
+    """
+
+    def __init__(self, workspace: Path, *, task: str = "", mode: str = "on") -> None:
+        self.workspace = Path(workspace)
+        self.mode = normalize_trace_mode(mode)
+        self.trace_id = _new_trace_id()
+        self.task = task
+        self.root = self.workspace / TRACE_ROOT / self.trace_id
+        self.started_at = time.perf_counter()
+        self.started_at_iso = utc_now()
+        self.sequence = 0
+        self.errors: list[str] = []
+        self.status = "running"
+        self.node_visits: dict[str, int] = {}
+        self.key_event_types: dict[str, int] = {}
+        self._events_path = self.root / EVENTS_FILE
+        if self.enabled:
+            self.root.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "off"
+
+    async def record_event(self, event: dict[str, Any]) -> None:
+        """记录一条自定义事件到 events.jsonl。"""
+        if not self.enabled:
+            return
+        event_type = str(event.get("type", "custom_event"))
+        if event_type in EVAL_KEY_EVENT_TYPES:
+            self.key_event_types[event_type] = self.key_event_types.get(event_type, 0) + 1
+        await self._append(
+            {
+                "seq": self._next_seq(),
+                "timestamp": utc_now(),
+                "elapsed_ms": self.elapsed_ms(),
+                "type": event_type,
+                "payload": compact_payload(event),
+            }
+        )
+
+    async def record_graph_update(self, event: dict[str, Any]) -> None:
+        """记录一次 graph update（节点访问统计）。"""
+        if not self.enabled:
+            return
+        nodes = list(event.keys()) if isinstance(event, dict) else []
+        for node in nodes:
+            self.node_visits[node] = self.node_visits.get(node, 0) + 1
+        await self._append(
+            {
+                "seq": self._next_seq(),
+                "timestamp": utc_now(),
+                "elapsed_ms": self.elapsed_ms(),
+                "type": "graph_update",
+                "payload": compact_payload({"nodes": nodes}),
+            }
+        )
+
+    async def end(self, *, status: str) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        self.status = status
+        summary = self.summary_payload()
+        try:
+            await asyncio.to_thread(write_json, self.root / SUMMARY_FILE, summary)
+        except Exception as exc:  # noqa: BLE001
+            self.errors.append(f"{type(exc).__name__}: {exc}")
+            summary = self.summary_payload()
+        return trace_summary_event(summary)
+
+    def summary_payload(self) -> dict[str, Any]:
+        return {
+            "trace_id": self.trace_id,
+            "status": self.status,
+            "task": self.task,
+            "workspace": str(self.workspace),
+            "trace_dir": str(self.root),
+            "events_file": str(self._events_path),
+            "summary_file": str(self.root / SUMMARY_FILE),
+            "started_at": self.started_at_iso,
+            "ended_at": utc_now(),
+            "duration_ms": self.elapsed_ms(),
+            "event_count": self.sequence,
+            "node_visits": dict(sorted(self.node_visits.items())),
+            "key_event_types": dict(sorted(self.key_event_types.items())),
+            "errors": list(self.errors),
+        }
+
+    def elapsed_ms(self) -> int:
+        return round((time.perf_counter() - self.started_at) * 1000)
+
+    def _next_seq(self) -> int:
+        self.sequence += 1
+        return self.sequence
+
+    async def _append(self, line: dict[str, Any]) -> None:
+        try:
+            await asyncio.to_thread(self._write_line, line)
+        except Exception as exc:  # noqa: BLE001
+            self.errors.append(f"{type(exc).__name__}: {exc}")
+
+    def _write_line(self, line: dict[str, Any]) -> None:
+        with self._events_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")

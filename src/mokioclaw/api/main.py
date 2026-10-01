@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from mokioclaw.api.routes.chat import router as chat_router
+from mokioclaw.api.routes.eval import router as eval_router
 from mokioclaw.api.routes.knowledge import router as knowledge_router
 from mokioclaw.api.routes.skills import router as skills_router
 from mokioclaw.db import init_db, resolve_db_path
@@ -62,6 +63,7 @@ app = FastAPI(
 app.include_router(chat_router)
 app.include_router(knowledge_router)
 app.include_router(skills_router)
+app.include_router(eval_router)
 
 
 @app.get("/health", tags=["system"])
