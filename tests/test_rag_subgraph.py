@@ -13,9 +13,11 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage
 
+from mokioclaw.db import init_db
 from mokioclaw.graph.workflow import build_entry_workflow
 from mokioclaw.prompts.rag import RAG_FALLBACK_REPLY
 from mokioclaw.rag import nodes as rag_nodes
+from mokioclaw.rag.store import ChunkRow, fetch_parent_groups, replace_doc_chunks
 from mokioclaw.rag.workflow import build_rag_subgraph
 
 
@@ -177,6 +179,26 @@ def test_rrf_fusion_scores_and_order() -> None:
     assert scores["c2"] == pytest.approx(1 / 61 + 1 / 62)
     assert scores["c1"] == pytest.approx(1 / 61)
     assert scores["c3"] == pytest.approx(1 / 62)
+
+
+def test_rrf_fusion_single_channel_and_missing_rank() -> None:
+    """单路召回可用；另一路缺 rank 的命中只计一路分数。"""
+    result = asyncio.run(
+        rag_nodes.rrf_fusion_node(
+            {
+                "bm25_hits": [_hit("c1", bm25_rank=1)],
+                "dense_hits": [_hit("c1"), _hit("c2")],  # 无 dense_rank
+            }
+        )
+    )
+    fused = {hit["child_id"]: hit for hit in result["fused_hits"]}
+    assert fused["c1"]["rrf_score"] == pytest.approx(1 / 61)
+    assert fused["c2"]["rrf_score"] == pytest.approx(0.0)
+
+
+def test_rrf_fusion_empty_channels() -> None:
+    result = asyncio.run(rag_nodes.rrf_fusion_node({"bm25_hits": [], "dense_hits": []}))
+    assert result["fused_hits"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +373,53 @@ def test_rerank_node_falls_back_to_rrf_order(monkeypatch) -> None:
     reranked = result["reranked_hits"]
     assert [hit["child_id"] for hit in reranked] == ["c1", "c2"]
     assert all(hit["rerank_prob"] == 1.0 for hit in reranked)
+
+
+def test_fetch_parent_groups_neighborhood_and_dedup(tmp_path, monkeypatch) -> None:
+    """真实 SQLite：命中 child 回溯父分片 + 邻域扩展跨父边界 + 按命中序去重。"""
+    db_path = tmp_path / "rag-store.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    asyncio.run(init_db())
+
+    rows = [
+        # doc-a：P1 覆盖 position 1-3，P2 覆盖 4-6
+        ChunkRow("a1", "doc-a#P1", "a.md", 1, "甲"),
+        ChunkRow("a2", "doc-a#P1", "a.md", 2, "乙"),
+        ChunkRow("a3", "doc-a#P1", "a.md", 3, "丙"),
+        ChunkRow("a4", "doc-a#P2", "a.md", 4, "丁"),
+        ChunkRow("a5", "doc-a#P2", "a.md", 5, "戊"),
+        # doc-b：独立文档，不应被 doc-a 的邻域扩展牵连
+        ChunkRow("b1", "doc-b#P1", "b.md", 1, "子"),
+    ]
+    asyncio.run(replace_doc_chunks("a.md", rows[:5]))
+    asyncio.run(replace_doc_chunks("b.md", rows[5:]))
+
+    # 命中 a3（P1 末尾）与 a1：邻域 ±1 把 a4 所属的 P2 一并纳入；同父命中去重
+    groups = asyncio.run(fetch_parent_groups(["a3", "a1"], neighbor=1, parent_max=3))
+
+    assert [g["parent_id"] for g in groups] == ["doc-a#P1", "doc-a#P2"]
+    assert groups[0]["text"] == "甲乙丙"
+    assert groups[0]["matched_child_ids"] == ["a3", "a1"]
+    assert groups[1]["text"] == "丁戊"
+    assert groups[1]["matched_child_ids"] == []  # 纯邻域扩展带入
+    assert all(g["doc_source"] == "a.md" for g in groups)  # 邻域不跨文档
+
+
+def test_fetch_parent_groups_parent_max_and_empty(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "rag-store2.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    asyncio.run(init_db())
+    rows = [
+        ChunkRow(f"c{i}", f"d#P{i}", "d.md", i, f"段{i}")
+        for i in range(1, 5)
+    ]
+    asyncio.run(replace_doc_chunks("d.md", rows))
+
+    # parent_max=2：只保留按命中顺序的前两个父分片
+    groups = asyncio.run(fetch_parent_groups(["c1", "c2", "c3", "c4"], neighbor=0, parent_max=2))
+    assert [g["parent_id"] for g in groups] == ["d#P1", "d#P2"]
+    # 未知 child_id → 空结果
+    assert asyncio.run(fetch_parent_groups(["nope"], neighbor=0, parent_max=3)) == []
 
 
 def test_parent_lookup_numbers_sources_and_respects_char_budget(monkeypatch) -> None:

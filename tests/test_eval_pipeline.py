@@ -199,6 +199,98 @@ def test_rule_checks_clarify_rounds_within_limit() -> None:
     assert sample.clarify_rounds == 2
 
 
+def test_rule_checks_clarify_rounds_over_limit_fails() -> None:
+    sample = EvalSample(
+        sample_id="E26",
+        input="模糊",
+        expected_category="clarify",
+        expected_route="clarify",
+        expected_tools=[],
+        expected_fallback="none",
+        actual_category="clarify",
+        actual_route="clarify",
+        actual_tools=[],
+        actual_answer="能具体点吗",
+        actual_fallback="none",
+        clarify_rounds=6,
+    )
+    report = run_rule_checks(sample)
+    clarify = next(r for r in report.results if r.name == "clarify_rounds")
+    assert not clarify.passed
+    assert not report.passed
+
+
+def test_rule_checks_business_sample_unexpected_fallback_fails() -> None:
+    """业务类样本（expected_fallback=none）意外触发兜底应判失败。"""
+    sample = EvalSample(
+        sample_id="E02",
+        input="查余额",
+        expected_category="agent_service",
+        expected_route="agent_loop",
+        expected_tools=["query_balance"],
+        expected_fallback="none",
+        actual_category="agent_service",
+        actual_route="agent_loop",
+        actual_tools=["query_balance"],
+        actual_answer="",
+        actual_fallback="agent_fallback",
+        clarify_rounds=0,
+        tool_calls=[{"name": "query_balance", "args": {}}],
+    )
+    report = run_rule_checks(sample)
+    fb = next(r for r in report.results if r.name == "fallback")
+    assert not fb.passed
+    assert "unexpected fallback" in fb.detail
+
+
+def test_rule_checks_tool_param_invalid_enum_detected() -> None:
+    """枚举值非法被注册表参数声明捕获（report_fault.fault_type 有 enum）。"""
+    sample = EvalSample(
+        sample_id="E11",
+        input="报修",
+        expected_category="agent_service",
+        expected_route="agent_loop",
+        expected_tools=["report_fault"],
+        expected_fallback="none",
+        actual_category="agent_service",
+        actual_route="agent_loop",
+        actual_tools=["report_fault"],
+        actual_answer="",
+        actual_fallback="none",
+        clarify_rounds=0,
+        tool_calls=[{
+            "name": "report_fault",
+            "args": {"fault_type": "外星信号", "description": "断网"},
+        }],
+    )
+    report = run_rule_checks(sample)
+    tool = next(r for r in report.results if r.name == "tool_params")
+    assert not tool.passed
+    assert "fault_type" in tool.detail
+
+
+def test_rule_checks_tool_param_missing_required_detected() -> None:
+    sample = EvalSample(
+        sample_id="E12",
+        input="报修",
+        expected_category="agent_service",
+        expected_route="agent_loop",
+        expected_tools=["report_fault"],
+        expected_fallback="none",
+        actual_category="agent_service",
+        actual_route="agent_loop",
+        actual_tools=["report_fault"],
+        actual_answer="",
+        actual_fallback="none",
+        clarify_rounds=0,
+        tool_calls=[{"name": "report_fault", "args": {"fault_type": "宽带故障"}}],
+    )
+    report = run_rule_checks(sample)
+    tool = next(r for r in report.results if r.name == "tool_params")
+    assert not tool.passed
+    assert "description" in tool.detail
+
+
 # ---------------------------------------------------------------------------
 # llm_judge（退化路径，不依赖真实 LLM）
 # ---------------------------------------------------------------------------
