@@ -2,23 +2,22 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from mokioclaw.core.state import RuntimeState
-from mokioclaw.tools.file_tools import read_text_lossy
-from mokioclaw.tools.notepad_tool import NOTEPAD_FILE, read_notepad
 
 HISTORY_SUMMARY_FILE = "HISTORY_SUMMARY.md"
 
+_TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "gbk")
+
 RULES_LAYER = {
-    "scope": "workspace",
+    "scope": "telecom_customer_service",
     "storage": "internal",
     "rules": [
-        "Work inside the current workspace only.",
-        "Use paths relative to the workspace; do not prefix paths with workspace/.",
-        "Keep durable task context outside the raw messages transcript when possible.",
-        "Treat TODO.md as working plan state, NOTEPAD.md as durable notes, and HISTORY_SUMMARY.md as compressed history.",
-        "Do not expose memory write tools to agents; layered memory is assembled by the runtime.",
+        "Serve only telecom customer-service scenarios: balance, packages, fault reports, and service handling.",
+        "Assemble layered memory at runtime; do not expose memory write tools to the model.",
+        "Treat the short conversation window, long-term user summary, and retrieved evidence as separate layers.",
     ],
 }
 
@@ -31,14 +30,25 @@ MAX_TEXT_CHARS = {
     "last_error": 1400,
     "context_summary": 1600,
     "session_context": 1800,
-    "notepad": 1800,
     "history_summary": 2200,
 }
 
 
+def _read_text_lossy(path: Path) -> str:
+    """读取文本文件，依次尝试常见中文编码，全部失败时退化为替换字符读取。"""
+    last_error: UnicodeDecodeError | None = None
+    for encoding in _TEXT_ENCODINGS:
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    if last_error is not None:
+        return path.read_text(encoding="utf-8", errors="replace")
+    return path.read_text(encoding="utf-8")
+
+
 def build_layered_memory(state: dict[str, Any], *, node: str = "graph") -> dict[str, Any]:
     runtime = state["runtime"]
-    notepad = read_notepad(runtime)
     history = read_history_summary(runtime)
     sources = [
         {
@@ -73,9 +83,6 @@ def build_layered_memory(state: dict[str, Any], *, node: str = "graph") -> dict[
         "history_path": HISTORY_SUMMARY_FILE,
         "history_exists": history.get("exists", False),
         "history_summary": _short_text(history_summary, MAX_TEXT_CHARS["history_summary"]),
-        "notepad_path": NOTEPAD_FILE,
-        "notepad_exists": notepad.get("exists", False),
-        "notepad": _short_text(notepad.get("content", ""), MAX_TEXT_CHARS["notepad"]),
         "context_summary": _short_text(state.get("context_summary", ""), MAX_TEXT_CHARS["context_summary"]),
         "compression_events": state.get("compression_events", [])[-3:],
     }
@@ -100,7 +107,6 @@ def memory_event(memory: dict[str, Any], *, node: str) -> dict[str, Any]:
         "todo_count": len(working.get("todos", [])),
         "source_count": len(working.get("sources", [])),
         "handoff_count": len(working.get("agent_handoffs", [])),
-        "notepad_exists": bool(history.get("notepad_exists")),
         "history_exists": bool(history.get("history_exists")),
         "history_path": history.get("history_path", HISTORY_SUMMARY_FILE),
         "layers": {
@@ -115,7 +121,7 @@ def read_history_summary(state: RuntimeState) -> dict[str, Any]:
     path = state.assert_workspace_path(state.workspace / HISTORY_SUMMARY_FILE)
     if not path.exists():
         return {"ok": True, "path": HISTORY_SUMMARY_FILE, "content": "", "exists": False}
-    content = read_text_lossy(path)
+    content = _read_text_lossy(path)
     state.record_read(path, complete=True)
     return {"ok": True, "path": HISTORY_SUMMARY_FILE, "content": content, "exists": True}
 

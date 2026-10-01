@@ -113,9 +113,14 @@ def test_tui_renders_fake_stream_events(tmp_path) -> None:
     async def run() -> None:
         app = MokioClawTuiApp(initial_task="demo task", stream_factory=fake_stream)
         async with app.run_test(size=(120, 36)) as pilot:
-            await pilot.pause(0.3)
-            assert "workspace-a" in app.sidebar_text
-            assert "trace-demo" in app.sidebar_text
+            # 等待后台事件流处理完成，避免依赖固定睡眠时长
+            for _ in range(50):
+                await pilot.pause(0.1)
+                if app.run_count == 1 and not app.running:
+                    break
+            # 侧边栏会把长路径 shorten 到 80 字符，故以实际记录的路径为准，避免依赖绝对路径长度
+            assert Path(app.latest_workspace).name == "workspace-a"
+            assert Path(app.latest_trace).name == "trace-demo"
             assert "session-demo" in app.sidebar_text
             assert app.run_count == 1
             assert not app.running

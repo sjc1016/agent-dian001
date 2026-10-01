@@ -7,3 +7,8 @@ __pycache__/
 .agent-sync-store/
 .codegraph/
 *.pid
+data/
+models/
+*.db
+*.db-wal
+*.db-shm

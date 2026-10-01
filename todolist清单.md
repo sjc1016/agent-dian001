@@ -7,7 +7,7 @@
 
 | 阶段 | 主题 | 任务数 | 状态 |
 | --- | --- | --- | --- |
-| 阶段 0 | 基础设施与领域瘦身 | 12 | ⬜ 未开始 |
+| 阶段 0 | 基础设施与领域瘦身 | 12 | ✅ 完成 |
 | 阶段 1 | FastAPI 服务化改造 | 9 | ⬜ 未开始 |
 | 阶段 2 | 意图识别与任务调度 | 10 | ⬜ 未开始 |
 | 阶段 3 | RAG 检索子图（LangGraph） | 22 | ⬜ 未开始 |
@@ -25,23 +25,23 @@
 
 **目标**：把"代码 Agent"清空为干净的客服骨架，装好新基础设施（SQLite + Milvus Lite + 本地模型，零外部服务）。
 
-- [ ] **P0-1** 添加依赖：`uv add fastapi uvicorn docling pymilvus sqlalchemy aiosqlite rank_bm25 sentence-transformers`
-- [ ] **P0-2** 删除 `src/mokioclaw/agents/`（search_agent.py、code_agent.py）及所有引用
-- [ ] **P0-3** 删除代码类工具：`tools/bash_tool.py`、`file_tools.py`、`grep_tool.py`、`notepad_tool.py`、`web_search_tool.py`
-- [ ] **P0-4** 清空 [tools/registry.py](./src/mokioclaw/tools/registry.py) 中对已删工具的注册，保证 import 不报错
-- [ ] **P0-5** 清理 prompts/stage3、stage4 中 planner/verifier 的代码任务描述（先置空，阶段 2/4 重写）
-- [ ] **P0-6** 同步删除/跳过失效旧测试（test_tools、test_graph、test_cli_smoke 中引用已删模块的用例）
-- [ ] **P0-7** 新建 `src/mokioclaw/db/` 骨架：`__init__.py`、`engine.py`（aiosqlite 异步引擎，开启 WAL）、`schema.sql`
-- [ ] **P0-8** 应用启动时自动执行 schema.sql 初始化 `data/telecom_cs.db`（.env 配 DB_PATH）
-- [ ] **P0-9** 验证 Milvus Lite 本地文件模式：写一条向量 → 读回成功
-- [ ] **P0-10** 下载 BGE-M3 模型到本地 `models/bge-m3/`
-- [ ] **P0-11** 下载 bge-reranker 模型到本地 `models/bge-reranker/`
-- [ ] **P0-12** 编写模型冒烟脚本：输出 1 条 embedding 向量 + 1 个 rerank 分数
+- [x] **P0-1** 添加依赖：`uv add fastapi uvicorn docling pymilvus sqlalchemy aiosqlite rank_bm25 sentence-transformers`
+- [x] **P0-2** 删除 `src/mokioclaw/agents/`（search_agent.py、code_agent.py）及所有引用
+- [x] **P0-3** 删除代码类工具：`tools/bash_tool.py`、`file_tools.py`、`grep_tool.py`、`notepad_tool.py`、`web_search_tool.py`
+- [x] **P0-4** 清空 [tools/registry.py](./src/mokioclaw/tools/registry.py) 中对已删工具的注册，保证 import 不报错
+- [x] **P0-5** 清理 prompts/stage3、stage4 中 planner/verifier 的代码任务描述（先置空，阶段 2/4 重写）
+- [x] **P0-6** 同步删除/跳过失效旧测试（test_tools、test_graph、test_cli_smoke 中引用已删模块的用例）
+- [x] **P0-7** 新建 `src/mokioclaw/db/` 骨架：`__init__.py`、`engine.py`（aiosqlite 异步引擎，开启 WAL）、`schema.sql`
+- [x] **P0-8** 应用启动时自动执行 schema.sql 初始化 `data/telecom_cs.db`（.env 配 DB_PATH）<!-- 阶段0提供 `uv run python -m mokioclaw.db` 幂等建库；FastAPI 生命周期自动调用在 P1-1 挂载 -->
+- [x] **P0-9** 验证 Milvus Lite 本地文件模式：写一条向量 → 读回成功
+- [x] **P0-10** 下载 BGE-M3 模型到本地 `models/bge-m3/`
+- [x] **P0-11** 下载 bge-reranker 模型到本地 `models/bge-reranker/`
+- [x] **P0-12** 编写模型冒烟脚本：输出 1 条 embedding 向量 + 1 个 rerank 分数
 
 **🚪 阶段 0 验收门**
-- [ ] `uv run pytest -q` 全绿（清理后）
-- [ ] 冒烟脚本正常输出向量与 rerank 分数
-- [ ] `data/telecom_cs.db` 自动创建且无报错启动
+- [x] `uv run pytest -q` 全绿（清理后）
+- [x] 冒烟脚本正常输出向量与 rerank 分数
+- [x] `data/telecom_cs.db` 自动创建且无报错启动
 
 ---
 
@@ -235,4 +235,11 @@
 
 | 日期 | 阶段 | 问题与解决 |
 | --- | --- | --- |
+| 2026-10-01 | P0-2~P0-6 | 删除 agents/代码工具后仍有残留调用：verifier 工具循环里还在调已删的 `_execute_read_only_tool`。已把 verifier 简化为单次 `model.invoke`、planner 只留 TodoWriteTool；删函数后务必全仓 grep 调用点。`memory.py` 原依赖被删的 `file_tools.read_text_lossy`，改为文件内内联 `_read_text_lossy`（utf-8→utf-8-sig→gbk，失败 errors=replace）。分层记忆同步去掉 NOTEPAD 层、scope 改 telecom_customer_service。 |
+| 2026-10-01 | P0-6 | verifier 不再 `bind_tools`，测试替身 FakeModel 需直接实现 `invoke`（不再走 bind_tools 返回的 FakeBoundModel）。 |
+| 2026-10-01 | P0-6 | `test_tui_renders_fake_stream_events` 在 Windows 长临时路径下失败是**历史遗留**（stash 改动后原码同样失败）：侧边栏 `shorten(path,80)` 截掉了结尾的 workspace-a/trace-demo，且固定 0.3s 睡眠有竞态。改为轮询运行结束后断言 `Path(latest_workspace/latest_trace).name`，与路径长度解耦。 |
+| 2026-10-01 | P0-7 | SQLAlchemy 异步引擎需要 greenlet，必须声明 `sqlalchemy[asyncio]`（仅装 sqlalchemy 会在 import asyncio 扩展时报错）。 |
+| 2026-10-01 | P0-9 | pymilvus 3.0.2 的 `[milvus-lite]` extra 在 Windows/Python 3.13 不会自动带 milvus-lite，需直接 `uv add milvus-lite`（实测 3.2.1 可用）。本地文件写入→按 id 读回→向量检索均成功。注意：**项目绝对路径含中文**时 faiss 后台持久化 HNSW 索引会打印 "could not open ... for writing" 的非致命报错（不影响写入/读回/检索，纯英文路径下无此告警）；`scripts/verify_milvus_lite.py` 支持用 `MILVUS_DB_PATH` 指向纯英文路径。阶段 3 建正式 collection 时需关注。 |
+| 2026-10-01 | P0-10/11 | hf-mirror 上 bge-m3 的权重文件名是 `pytorch_model.bin`（非 model.safetensors），下载 ignore 规则切勿误排除；reranker 为 `model.safetensors`。镜像长连接传大文件会无数据挂起，`scripts/download_models.py` 采用「并行 Range + 看门狗限时终止 + `.incomplete` 断点续传重试」收敛完成；单连接整体 GET 在该镜像上反而会长时间零字节。 |
+| 2026-10-01 | P0-1 | 已移除不再使用的 `tavily-python`（WebSearch 工具删除，联网检索改由阶段 3 RAG 承担），`.env.example` 同步删 TAVILY_API_KEY、新增 DB_PATH；`data/`、`models/`、`*.db*` 已加入 .gitignore。 |
 | | | |

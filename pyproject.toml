@@ -5,14 +5,22 @@ description = "A teaching-first mini CodeAgent built from ToolCall to Claw."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiosqlite>=0.22.1",
+    "docling>=2.131.0",
+    "fastapi>=0.142.2",
     "langchain>=1.2.15",
     "langchain-openai>=1.1.13",
     "langgraph>=1.1.6",
+    "milvus-lite>=3.2.1",
     "pillow>=11.0.0",
+    "pymilvus>=3.0.2",
     "python-dotenv>=1.1.1",
-    "tavily-python>=0.7.24",
+    "rank-bm25>=0.2.2",
+    "sentence-transformers>=6.1.0",
+    "sqlalchemy[asyncio]>=2.1.1",
     "textual>=8.2.4",
     "typer>=0.16.0",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]

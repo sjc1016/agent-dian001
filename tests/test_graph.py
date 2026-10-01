@@ -9,9 +9,6 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 from mokioclaw.core.state import RuntimeState
 from mokioclaw.graph.memory import build_layered_memory, persist_history_summary, read_history_summary
 from mokioclaw.graph.nodes import (
-    AMIYA_COMMANDS,
-    _call_code_agent_tool,
-    _call_search_agent_tool,
     chat_responder_node,
     context_compressor_node,
     context_compressor_route,
@@ -30,7 +27,7 @@ from mokioclaw.graph.workflow import build_workflow
 
 
 def test_model_verifier_passes_from_json(monkeypatch, tmp_path: Path) -> None:
-    class FakeBoundModel:
+    class FakeModel:
         def invoke(self, messages):
             return AIMessage(
                 content=json.dumps(
@@ -42,10 +39,6 @@ def test_model_verifier_passes_from_json(monkeypatch, tmp_path: Path) -> None:
                     }
                 )
             )
-
-    class FakeModel:
-        def bind_tools(self, tools):
-            return FakeBoundModel()
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
     state = {
@@ -66,13 +59,9 @@ def test_model_verifier_passes_from_json(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_model_verifier_invalid_json_fails_and_routes_back(monkeypatch, tmp_path: Path) -> None:
-    class FakeBoundModel:
+    class FakeModel:
         def invoke(self, messages):
             return AIMessage(content="not json")
-
-    class FakeModel:
-        def bind_tools(self, tools):
-            return FakeBoundModel()
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
     state = {
@@ -279,7 +268,7 @@ def test_context_compressor_removes_old_messages_and_preserves_state(monkeypatch
     assert context_compressor_route({**state, **result}) == "verifier"
 
 
-def test_amiya_planner_uses_fixed_verifier_commands(monkeypatch, tmp_path: Path) -> None:
+def test_planner_writes_default_customer_service_plan(monkeypatch, tmp_path: Path) -> None:
     class FakeBoundModel:
         def invoke(self, messages):
             return AIMessage(content="plan ready")
@@ -291,64 +280,21 @@ def test_amiya_planner_uses_fixed_verifier_commands(monkeypatch, tmp_path: Path)
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
     result = planner_node(
         {
-            "task": "帮我查阅明日方舟阿米娅，并编写一个 HTML 介绍人物",
+            "task": "我想查一下我的话费余额",
             "runtime": RuntimeState(workspace=tmp_path),
             "attempts": 0,
             "max_attempts": 3,
         }
     )
 
-    assert result["verification_commands"] == AMIYA_COMMANDS
+    assert result["verification_commands"] == []
     assert result["todos"][0]["id"] == "todo-1"
     assert result["todos"][0]["status"] == "pending"
     assert (tmp_path / "TODO.md").exists()
-    assert "amiya_profile.html" in (tmp_path / "TODO.md").read_text(encoding="utf-8")
-
-
-def test_call_search_agent_tool_updates_state(monkeypatch, tmp_path: Path) -> None:
-    def fake_search_agent(state, instruction, *, writer=None, max_loops=4):
-        return {
-            "summary": "Amiya is a key Arknights character.",
-            "sources": [{"title": "Amiya", "url": "https://example.com/amiya"}],
-            "queries": ["Amiya Arknights"],
-        }
-
-    monkeypatch.setattr("mokioclaw.graph.nodes.run_search_agent", fake_search_agent)
-    state = {"task": "阿米娅", "runtime": RuntimeState(workspace=tmp_path)}
-
-    result = _call_search_agent_tool(state, lambda event: None, "research Amiya")
-
-    assert result["ok"] is True
-    assert "Amiya" in state["research_notes"]
-    assert state["sources"][0]["url"] == "https://example.com/amiya"
-    assert state["agent_handoffs"][0]["to_agent"] == "searchAgent"
-
-
-def test_call_code_agent_tool_updates_state(monkeypatch, tmp_path: Path) -> None:
-    def fake_code_agent(state, instruction, *, writer=None, max_loops=10):
-        return {
-            "summary": "Created amiya_profile.html",
-            "todos": [{"id": "todo-1", "content": "write", "status": "completed", "note": ""}],
-        }
-
-    monkeypatch.setattr("mokioclaw.graph.nodes.run_code_agent", fake_code_agent)
-    state = {
-        "task": "阿米娅",
-        "runtime": RuntimeState(workspace=tmp_path),
-        "todos": [{"id": "todo-1", "content": "write", "status": "pending", "note": ""}],
-    }
-
-    result = _call_code_agent_tool(state, lambda event: None, "write page")
-
-    assert result["ok"] is True
-    assert state["code_agent_summary"] == "Created amiya_profile.html"
-    assert state["todos"][0]["status"] == "completed"
-    assert state["agent_handoffs"][0]["to_agent"] == "codeAgent"
 
 
 def test_layered_memory_splits_rules_working_and_history(tmp_path: Path) -> None:
     runtime = RuntimeState(workspace=tmp_path)
-    (tmp_path / "NOTEPAD.md").write_text("# MokioClaw Notepad\n\nImportant durable note.\n", encoding="utf-8")
     persist_history_summary(runtime, "Previous compressed history.")
 
     memory = build_layered_memory(
@@ -366,18 +312,16 @@ def test_layered_memory_splits_rules_working_and_history(tmp_path: Path) -> None
     )
 
     assert set(memory) == {"rules", "working_memory", "history_summary_store"}
-    assert memory["rules"]["scope"] == "workspace"
+    assert memory["rules"]["scope"] == "telecom_customer_service"
     assert memory["working_memory"]["task"] == "demo"
     assert memory["working_memory"]["todos"][0]["content"] == "write"
     assert memory["working_memory"]["sources"][0]["url"] == "https://example.com"
-    assert memory["history_summary_store"]["notepad_exists"] is True
-    assert "Important durable note" in memory["history_summary_store"]["notepad"]
+    assert memory["history_summary_store"]["history_exists"] is True
     assert "Previous compressed history" in memory["history_summary_store"]["history_summary"]
 
 
 def test_layered_memory_trims_long_history_and_handoffs(tmp_path: Path) -> None:
     runtime = RuntimeState(workspace=tmp_path)
-    (tmp_path / "NOTEPAD.md").write_text("note " * 1000, encoding="utf-8")
     handoffs = [
         {"from_agent": "planner", "to_agent": "codeAgent", "instruction": "i" * 1000, "result": "r" * 1000}
         for _ in range(8)
@@ -396,7 +340,7 @@ def test_layered_memory_trims_long_history_and_handoffs(tmp_path: Path) -> None:
     assert len(memory["working_memory"]["research_notes"]) <= 1600
     assert len(memory["working_memory"]["agent_handoffs"]) == 6
     assert len(memory["working_memory"]["agent_handoffs"][0]["instruction"]) <= 500
-    assert len(memory["history_summary_store"]["notepad"]) <= 1800
+    assert len(memory["history_summary_store"]["history_summary"]) <= 2200
 
 
 def test_history_summary_read_missing_file(tmp_path: Path) -> None:

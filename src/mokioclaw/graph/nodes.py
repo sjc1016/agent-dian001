@@ -11,8 +11,6 @@ from langchain_core.tools import StructuredTool
 from langgraph.config import get_stream_writer
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
-from mokioclaw.agents.code_agent import run_code_agent
-from mokioclaw.agents.search_agent import run_search_agent
 from mokioclaw.graph.memory import (
     build_layered_memory,
     format_layered_memory_for_prompt,
@@ -23,34 +21,15 @@ from mokioclaw.graph.state import MokioGraphState, TodoItem, VerificationCheck
 from mokioclaw.prompts.stage3 import PLANNER_PROMPT, VERIFIER_PROMPT
 from mokioclaw.prompts.stage4 import CONTEXT_COMPRESSION_PROMPT
 from mokioclaw.providers.openai_provider import create_model
-from mokioclaw.tools import build_read_only_tools
 from mokioclaw.tools.todo_tool import persist_todos, write_todos
 
 
 DEFAULT_CONTEXT_TOKEN_LIMIT = 400000
 
-AMIYA_TODOS = [
-    "Research Amiya and collect reliable source links.",
-    "Create amiya_profile.html with a polished character introduction.",
-    "Include at least two source links in the HTML.",
-    "Run non-interactive checks for the generated HTML file.",
-]
-
-AMIYA_CRITERIA = [
-    "amiya_profile.html exists in the workspace.",
-    "The page mentions 阿米娅 and 明日方舟.",
-    "The page introduces identity, traits, abilities, and story role.",
-    "The page includes at least two source links.",
-]
-
-AMIYA_COMMANDS = [
-    "python -c \"from pathlib import Path; p=Path('amiya_profile.html'); s=p.read_text(encoding='utf-8'); assert '阿米娅' in s and '明日方舟' in s; assert s.lower().count('http') >= 2; print('amiya html ok')\"",
-]
-
 DEFAULT_TODOS = [
-    "Clarify the deliverable and acceptance criteria.",
-    "Delegate specialist work needed for the task.",
-    "Verify the generated result.",
+    "Clarify the customer's request and required slots.",
+    "Handle the request via retrieval or business skills.",
+    "Reflect on and verify the response before finishing.",
 ]
 
 INTENT_ROUTER_PROMPT = """You are the intent router for MokioClaw.
@@ -233,7 +212,8 @@ def verifier_node(state: MokioGraphState) -> dict[str, Any]:
     )
 
     model = create_model()
-    verifier = model.bind_tools(build_read_only_tools(state["runtime"]))
+    # 业务 Skill 工具将在阶段 4 接入反思校验节点；阶段 0 暂不绑定任何工具。
+    verifier = model
     messages: list[Any] = [
         SystemMessage(content=VERIFIER_PROMPT),
         HumanMessage(content=_verifier_input(state, memory)),
@@ -241,35 +221,10 @@ def verifier_node(state: MokioGraphState) -> dict[str, Any]:
     produced_messages: list[Any] = []
     tool_events: list[dict[str, Any]] = []
 
-    for _ in range(8):
-        response = verifier.invoke(messages)
-        produced_messages.append(response)
-        messages.append(response)
-        tool_calls = getattr(response, "tool_calls", None) or []
-        if not tool_calls:
-            break
-        for call in tool_calls:
-            writer({"type": "tool_call", "node": "verifier", "name": call.get("name"), "args": call.get("args", {})})
-            tool_message = _execute_read_only_tool(state, call)
-            event = _tool_result_event(tool_message, node="verifier")
-            tool_events.append(event)
-            writer(event)
-            produced_messages.append(tool_message)
-            messages.append(tool_message)
-    else:
-        produced_messages.append(
-            AIMessage(
-                content=json.dumps(
-                    {
-                        "passed": False,
-                        "reason": "Verifier stopped after the maximum tool loop count.",
-                        "checks": [],
-                        "recommended_next_instruction": "Inspect the workspace and complete the unfinished task.",
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        )
+    # 阶段 0：反思节点不绑定工具，直接要求模型返回校验 JSON；
+    # 阶段 4 会在这里恢复“调用业务 Skill → 校验结果”的工具循环。
+    response = verifier.invoke(messages)
+    produced_messages.append(response)
 
     parsed = _extract_json(_last_ai_content(produced_messages)) or {
         "passed": False,
@@ -438,11 +393,11 @@ def final_node(state: MokioGraphState) -> dict[str, Any]:
         f"LangGraph MultiAgent workflow finished: {status}\n\n"
         f"Plan: {state.get('plan_summary', '')}\n\n"
         f"Todos:\n{todos}\n\n"
-        f"Research sources:\n{sources or '(none)'}\n\n"
+        f"Sources:\n{sources or '(none)'}\n\n"
         f"Verifier:\n{state.get('verifier_summary', '')}\n\n"
         f"Checks:\n{checks or '(none)'}\n\n"
         f"Context compression:\n{compression_text}\n\n"
-        f"CodeAgent summary:\n{state.get('code_agent_summary') or state.get('last_actor_summary', '')}"
+        f"Agent summary:\n{state.get('code_agent_summary') or state.get('last_actor_summary', '')}"
     )
     return {"final_answer": final_answer}
 
@@ -471,6 +426,7 @@ def estimate_context_tokens(state: MokioGraphState) -> int:
 
 
 def _build_planner_tools(state: MokioGraphState, writer) -> list[StructuredTool]:
+    # searchAgent / codeAgent 已随领域瘦身删除；客服业务 Skill 将在阶段 4 接入。
     return [
         StructuredTool.from_function(
             name="TodoWriteTool",
@@ -481,16 +437,6 @@ def _build_planner_tools(state: MokioGraphState, writer) -> list[StructuredTool]
                 "Publish or revise plan state. Args: todos, acceptance_criteria, "
                 "verification_commands, optional plan_summary."
             ),
-        ),
-        StructuredTool.from_function(
-            name="CallSearchAgentTool",
-            func=lambda instruction: _call_search_agent_tool(state, writer, instruction),
-            description="Delegate research work to searchAgent. Args: instruction.",
-        ),
-        StructuredTool.from_function(
-            name="CallCodeAgentTool",
-            func=lambda instruction: _call_code_agent_tool(state, writer, instruction),
-            description="Delegate implementation work to codeAgent. Args: instruction.",
         ),
     ]
 
@@ -533,45 +479,6 @@ def _todo_write_tool(
     }
 
 
-def _call_search_agent_tool(state: MokioGraphState, writer, instruction: str) -> dict[str, Any]:
-    writer({"type": "handoff", "from": "planner", "to": "searchAgent", "instruction": instruction})
-    result = run_search_agent(state, instruction, writer=writer)
-    existing_sources = list(state.get("sources", []))
-    state["research_notes"] = _join_notes(state.get("research_notes", ""), result.get("summary", ""))
-    state["sources"] = _dedupe_sources(existing_sources + list(result.get("sources", [])))
-    handoff = {
-        "from_agent": "planner",
-        "to_agent": "searchAgent",
-        "instruction": instruction,
-        "result": result.get("summary", ""),
-    }
-    state["agent_handoffs"] = list(state.get("agent_handoffs", [])) + [handoff]
-    writer({"type": "handoff_result", "from": "searchAgent", "to": "planner", "result": result.get("summary", "")})
-    return {
-        "ok": True,
-        "summary": result.get("summary", ""),
-        "sources": state.get("sources", []),
-        "queries": result.get("queries", []),
-    }
-
-
-def _call_code_agent_tool(state: MokioGraphState, writer, instruction: str) -> dict[str, Any]:
-    writer({"type": "handoff", "from": "planner", "to": "codeAgent", "instruction": instruction})
-    result = run_code_agent(state, instruction, writer=writer)
-    state["todos"] = result.get("todos", state.get("todos", []))
-    state["code_agent_summary"] = result.get("summary", "")
-    state["last_actor_summary"] = result.get("summary", "")
-    handoff = {
-        "from_agent": "planner",
-        "to_agent": "codeAgent",
-        "instruction": instruction,
-        "result": result.get("summary", ""),
-    }
-    state["agent_handoffs"] = list(state.get("agent_handoffs", [])) + [handoff]
-    writer({"type": "handoff_result", "from": "codeAgent", "to": "planner", "result": result.get("summary", "")})
-    return {"ok": True, "summary": result.get("summary", ""), "todos": state.get("todos", [])}
-
-
 def _execute_planner_tool(state: MokioGraphState, writer, call: dict[str, Any]) -> ToolMessage:
     name = call.get("name", "")
     args = call.get("args") or {}
@@ -592,25 +499,6 @@ def _execute_planner_tool(state: MokioGraphState, writer, call: dict[str, Any]) 
     )
     writer(_tool_result_event(tool_message, node="planner"))
     return tool_message
-
-
-def _execute_read_only_tool(state: MokioGraphState, call: dict[str, Any]) -> ToolMessage:
-    name = call.get("name", "")
-    args = call.get("args") or {}
-    tools = {tool.name: tool for tool in build_read_only_tools(state["runtime"])}
-    tool = tools.get(name)
-    if tool is None:
-        result = {"ok": False, "error": f"unknown tool: {name}"}
-    else:
-        try:
-            result = tool.invoke(args)
-        except Exception as exc:
-            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    return ToolMessage(
-        content=json.dumps(result, ensure_ascii=False),
-        name=name,
-        tool_call_id=call.get("id") or f"{name}-call",
-    )
 
 
 def _compress_context_with_model(state: MokioGraphState) -> dict[str, Any]:
@@ -719,7 +607,7 @@ def _planner_input(state: MokioGraphState, memory: dict[str, Any]) -> str:
         f"Attempt: {state.get('attempts', 0) + 1}",
     ]
     if state.get("session_context"):
-        parts.append("Session context for this multi-turn coding session:\n" + str(state.get("session_context", "")))
+        parts.append("Session context for this multi-turn conversation:\n" + str(state.get("session_context", "")))
     parts.append("Layered memory snapshot:\n" + format_layered_memory_for_prompt(memory))
     return "\n\n".join(parts)
 
@@ -727,9 +615,9 @@ def _planner_input(state: MokioGraphState, memory: dict[str, Any]) -> str:
 def _verifier_input(state: MokioGraphState, memory: dict[str, Any]) -> str:
     parts = [f"Task: {state['task']}"]
     if state.get("session_context"):
-        parts.append("Session context for this multi-turn coding session:\n" + str(state.get("session_context", "")))
+        parts.append("Session context for this multi-turn conversation:\n" + str(state.get("session_context", "")))
     parts.append("Layered memory snapshot:\n" + format_layered_memory_for_prompt(memory))
-    parts.append("Inspect the workspace with tools and return only verifier JSON.")
+    parts.append("Return only verifier JSON.")
     return "\n\n".join(parts)
 
 
@@ -748,17 +636,10 @@ def _chat_input(state: MokioGraphState) -> str:
 
 
 def _default_plan(task: str) -> dict[str, Any]:
-    if _is_amiya_task(task):
-        return {
-            "plan_summary": "Research Amiya from Arknights and build a sourced HTML character profile.",
-            "todos": AMIYA_TODOS,
-            "acceptance_criteria": AMIYA_CRITERIA,
-            "verification_commands": AMIYA_COMMANDS,
-        }
     return {
-        "plan_summary": "Coordinate specialist agents to complete and verify the requested deliverable.",
+        "plan_summary": "Clarify and handle the customer service request.",
         "todos": DEFAULT_TODOS,
-        "acceptance_criteria": ["The requested deliverable exists.", "The verifier model confirms completion."],
+        "acceptance_criteria": ["The customer's request is addressed.", "The response is verified before finishing."],
         "verification_commands": [],
     }
 
@@ -767,13 +648,7 @@ def _apply_plan(state: MokioGraphState, plan: dict[str, Any]) -> None:
     state["plan_summary"] = str(plan.get("plan_summary", ""))
     state["todos"] = _todo_items([str(item) for item in plan.get("todos", [])], existing=state.get("todos", []))
     state["acceptance_criteria"] = [str(item) for item in plan.get("acceptance_criteria", [])]
-    state["verification_commands"] = _verification_commands_for_task(state["task"], plan)
-
-
-def _verification_commands_for_task(task: str, parsed: dict[str, Any]) -> list[str]:
-    if _is_amiya_task(task):
-        return AMIYA_COMMANDS
-    return [str(item) for item in parsed.get("verification_commands") or []]
+    state["verification_commands"] = [str(item) for item in plan.get("verification_commands") or []]
 
 
 def _todo_items(todos: list[str], *, existing: list[dict[str, Any]] | None = None) -> list[TodoItem]:
@@ -865,26 +740,6 @@ def _format_verifier_error(reason: str, recommended: str, tool_events: list[dict
     )
 
 
-def _join_notes(existing: str, new: str) -> str:
-    if not existing:
-        return new
-    if not new:
-        return existing
-    return existing + "\n\n" + new
-
-
-def _dedupe_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    deduped = []
-    for source in sources:
-        url = str(source.get("url", ""))
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        deduped.append(source)
-    return deduped
-
-
 def _trim_handoffs(handoffs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     trimmed = []
     for handoff in handoffs[-6:]:
@@ -924,11 +779,6 @@ def _todos_text(todos: list[dict[str, Any]]) -> str:
 
 def _list_text(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
-
-
-def _is_amiya_task(task: str) -> bool:
-    lowered = task.lower()
-    return "阿米娅" in task or "amiya" in lowered or "arknights" in lowered or "明日方舟" in task
 
 
 def _get_writer():
