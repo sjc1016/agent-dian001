@@ -23,7 +23,9 @@ class ChatRequest(BaseModel):
 
     message: str = Field(..., description="用户输入的消息文本")
     workspace: str | None = Field(None, description="会话工作区路径，不填则使用默认工作区")
-    session_id: str | None = Field(None, description="会话 ID（阶段 1 暂未使用，预留）")
+    session_id: str | None = Field(None, description="会话 ID（预留）")
+    phone: str | None = Field(None, description="会话绑定号码，不填使用演示号码 13800138000")
+    approval_mode: str = Field("inline", description="写操作审批策略：inline（人工确认）/ auto（自动批准）/ deny（拒绝）")
     max_attempts: int = Field(3, ge=1, le=10, description="最大重试次数")
 
 
@@ -38,6 +40,8 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 request.message,
                 session_workspace=workspace,
                 max_attempts=request.max_attempts,
+                approval_mode=request.approval_mode,
+                phone=request.phone,
             ):
                 yield event_to_sse(event)
         except Exception as exc:  # noqa: BLE001

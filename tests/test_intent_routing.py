@@ -16,6 +16,13 @@ from mokioclaw.db.engine import dispose_engine
 from mokioclaw.graph.workflow import build_entry_workflow
 
 
+@pytest.fixture(autouse=True)
+def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """每个用例独立 SQLite 库并关闭 Skill 目录监听线程。"""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "intent-test.db"))
+    monkeypatch.setenv("SKILL_WATCH", "0")
+
+
 def _fake_model(category: str, confidence: float = 0.9, reason: str = "test") -> type:
     """构造返回固定意图 JSON 的模型类（create_model 是工厂，须返回类本身）。"""
     payload = json.dumps(
@@ -27,16 +34,42 @@ def _fake_model(category: str, confidence: float = 0.9, reason: str = "test") ->
         def invoke(self, messages):
             return AIMessage(content=payload)
 
+        async def ainvoke(self, messages, **kwargs):
+            return AIMessage(content=payload)
+
     # create_model() 是工厂：调用后必须得到实例（类会导致未绑定 invoke 报错）
     return FakeModel()
 
 
 def _stream_updates(state: dict[str, Any], graph=None) -> dict[str, Any]:
-    updates: dict[str, Any] = {}
-    for mode, event in (graph or build_entry_workflow()).stream(state, stream_mode=["updates", "custom"]):
-        if mode == "updates":
-            updates.update(event)
-    return updates
+    """阶段 4：主图节点全部原生 async，统一用 astream 驱动（同步测试内 asyncio.run）。"""
+
+    async def _collect() -> dict[str, Any]:
+        updates: dict[str, Any] = {}
+        async for mode, event in (graph or build_entry_workflow()).astream(
+            state, stream_mode=["updates", "custom"]
+        ):
+            if mode == "updates":
+                updates.update(event)
+        return updates
+
+    return asyncio.run(_collect())
+
+
+def _stub_agent_direct_reply(monkeypatch, reply: str = "好的，已记录您的诉求（测试桩回复）。") -> None:
+    """agent_service 用例：Agent 子图思考模型打桩为"不调工具直接回复"，不依赖真实 LLM/业务库。"""
+
+    class FakeAgentModel:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages, **kwargs):
+            return AIMessage(content=reply)
+
+        async def ainvoke(self, messages, **kwargs):
+            return AIMessage(content=reply)
+
+    monkeypatch.setattr("mokioclaw.agent.nodes.create_model", lambda: FakeAgentModel())
 
 
 def _stub_rag_empty_path(monkeypatch) -> None:
@@ -53,6 +86,9 @@ def _stub_rag_empty_path(monkeypatch) -> None:
 
     class FakeRagModel:
         def invoke(self, messages):
+            return AIMessage(content="规范的检索问句")
+
+        async def ainvoke(self, messages, **kwargs):
             return AIMessage(content="规范的检索问句")
 
     monkeypatch.setattr("mokioclaw.rag.nodes.bm25_search", empty_search)
@@ -82,6 +118,8 @@ def test_ten_intent_inputs_route_correctly(monkeypatch, task: str, category: str
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model(category))
     if route == "rag_answer":
         _stub_rag_empty_path(monkeypatch)
+    if route == "agent_loop":
+        _stub_agent_direct_reply(monkeypatch)
 
     updates = _stream_updates({"task": task})
 

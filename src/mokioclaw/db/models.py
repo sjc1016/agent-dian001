@@ -50,3 +50,82 @@ class ChunkMetaModel(Base):
     doc_source: Mapped[str] = mapped_column(nullable=False)
     position: Mapped[int] = mapped_column(nullable=False)
     child_text: Mapped[str] = mapped_column(nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# 阶段 4：电信模拟业务表（业务层用 aiosqlite 短连接访问，此处仅声明 ORM 映射）
+# ---------------------------------------------------------------------------
+
+
+class AccountModel(Base):
+    """账户：话费余额与本月实时话费。"""
+
+    __tablename__ = "account"
+
+    phone: Mapped[str] = mapped_column(primary_key=True)
+    owner_name: Mapped[str] = mapped_column(nullable=False, default="")
+    balance: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    real_time_fee: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    bill_cycle: Mapped[str] = mapped_column(nullable=False, default="")
+    updated_at: Mapped[str] = mapped_column(nullable=False, default="")
+
+
+class PackageCatalogModel(Base):
+    """可办理套餐目录。"""
+
+    __tablename__ = "package_catalog"
+
+    package_id: Mapped[str] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(nullable=False)
+    monthly_fee: Mapped[float] = mapped_column(nullable=False)
+    data_quota_gb: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    voice_minutes: Mapped[int] = mapped_column(nullable=False, default=0)
+    broadband_mbps: Mapped[int] = mapped_column(nullable=False, default=0)
+    description: Mapped[str] = mapped_column(nullable=False, default="")
+    active: Mapped[int] = mapped_column(nullable=False, default=1)
+
+
+class UserPackageModel(Base):
+    """用户当前套餐与已用量。"""
+
+    __tablename__ = "user_package"
+
+    phone: Mapped[str] = mapped_column(primary_key=True)
+    package_id: Mapped[str] = mapped_column(nullable=False)
+    package_name: Mapped[str] = mapped_column(nullable=False, default="")
+    data_used_gb: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    voice_used_min: Mapped[int] = mapped_column(nullable=False, default=0)
+    effective_date: Mapped[str] = mapped_column(nullable=False, default="")
+    updated_at: Mapped[str] = mapped_column(nullable=False, default="")
+
+
+class FaultTicketModel(Base):
+    """故障报修工单。"""
+
+    __tablename__ = "fault_ticket"
+
+    ticket_id: Mapped[str] = mapped_column(primary_key=True)
+    phone: Mapped[str] = mapped_column(nullable=False)
+    fault_type: Mapped[str] = mapped_column(nullable=False)
+    description: Mapped[str] = mapped_column(nullable=False, default="")
+    address: Mapped[str] = mapped_column(nullable=False, default="")
+    contact: Mapped[str] = mapped_column(nullable=False, default="")
+    status: Mapped[str] = mapped_column(nullable=False, default="已受理")
+    status_note: Mapped[str] = mapped_column(nullable=False, default="")
+    created_at: Mapped[str] = mapped_column(nullable=False)
+    updated_at: Mapped[str] = mapped_column(nullable=False)
+
+
+class PendingApprovalModel(Base):
+    """跨轮人工确认：高危写操作执行前落库，用户下一轮确认/取消。"""
+
+    __tablename__ = "pending_approval"
+
+    approval_id: Mapped[str] = mapped_column(primary_key=True)
+    workspace: Mapped[str] = mapped_column(nullable=False)
+    skill_name: Mapped[str] = mapped_column(nullable=False)
+    args_json: Mapped[str] = mapped_column(nullable=False, default="{}")
+    summary: Mapped[str] = mapped_column(nullable=False, default="")
+    status: Mapped[str] = mapped_column(nullable=False, default="pending")
+    created_at: Mapped[str] = mapped_column(nullable=False)
+    updated_at: Mapped[str] = mapped_column(nullable=False)

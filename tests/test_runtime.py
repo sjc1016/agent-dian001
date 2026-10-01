@@ -94,15 +94,24 @@ def test_stream_agent_events_routes_model_chat_without_workspace(monkeypatch, tm
     from mokioclaw.core.agent import stream_agent_events
 
     class FakeEntryWorkflow:
+        def _events(self):
+            return [
+                (
+                    "custom",
+                    {"type": "intent_decision", "route": "chat", "reason": "model classified as greeting", "confidence": 0.91},
+                ),
+                (
+                    "custom",
+                    {"type": "chat_response", "mode": "lightweight", "reason": "model classified as greeting", "response": "你好，我在。"},
+                ),
+            ]
+
         def stream(self, inputs, stream_mode):
-            yield (
-                "custom",
-                {"type": "intent_decision", "route": "chat", "reason": "model classified as greeting", "confidence": 0.91},
-            )
-            yield (
-                "custom",
-                {"type": "chat_response", "mode": "lightweight", "reason": "model classified as greeting", "response": "你好，我在。"},
-            )
+            yield from self._events()
+
+        async def astream(self, inputs, stream_mode):
+            for event in self._events():
+                yield event
 
     def fail_complex_workflow():
         raise AssertionError("complex workflow should not be built for chat route")
@@ -120,11 +129,20 @@ def test_stream_agent_events_routes_model_workflow_to_complex_graph(monkeypatch,
     from mokioclaw.core.agent import stream_agent_events
 
     class FakeEntryWorkflow:
+        def _events(self):
+            return [
+                (
+                    "custom",
+                    {"type": "intent_decision", "route": "workflow", "reason": "deliverable requested", "confidence": 0.94},
+                )
+            ]
+
         def stream(self, inputs, stream_mode):
-            yield (
-                "custom",
-                {"type": "intent_decision", "route": "workflow", "reason": "deliverable requested", "confidence": 0.94},
-            )
+            yield from self._events()
+
+        async def astream(self, inputs, stream_mode):
+            for event in self._events():
+                yield event
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
@@ -351,13 +369,23 @@ def test_stream_session_events_chat_writes_session_without_harness(monkeypatch, 
     monkeypatch.setenv("DB_PATH", str(tmp_path / "telecom_cs.db"))
 
     class FakeEntryWorkflow:
+        def _events(self):
+            return [
+                (
+                    "custom",
+                    {"type": "intent_decision", "route": "chat", "reason": "greeting", "confidence": 0.9},
+                ),
+                ("updates", {"chat_responder": {"chat_response": "你好，我在。", "final_answer": "你好，我在。"}}),
+            ]
+
         def stream(self, inputs, stream_mode):
             assert inputs["session_context"]
-            yield (
-                "custom",
-                {"type": "intent_decision", "route": "chat", "reason": "greeting", "confidence": 0.9},
-            )
-            yield ("updates", {"chat_responder": {"chat_response": "你好，我在。", "final_answer": "你好，我在。"}})
+            yield from self._events()
+
+        async def astream(self, inputs, stream_mode):
+            assert inputs["session_context"]
+            for event in self._events():
+                yield event
 
     def fail_complex_workflow():
         raise AssertionError("complex workflow should not run for chat route")
@@ -390,11 +418,20 @@ def test_stream_session_events_workflow_reuses_workspace_and_session_context(mon
     captured = {}
 
     class FakeEntryWorkflow:
+        def _events(self):
+            return [
+                (
+                    "custom",
+                    {"type": "intent_decision", "route": "workflow", "reason": "needs files", "confidence": 0.9},
+                )
+            ]
+
         def stream(self, inputs, stream_mode):
-            yield (
-                "custom",
-                {"type": "intent_decision", "route": "workflow", "reason": "needs files", "confidence": 0.9},
-            )
+            yield from self._events()
+
+        async def astream(self, inputs, stream_mode):
+            for event in self._events():
+                yield event
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
@@ -428,8 +465,17 @@ def test_stream_session_events_workflow_reuses_workspace_and_session_context(mon
 
 
 class _WorkflowEntry:
+    def _events(self):
+        return [
+            (
+                "custom",
+                {"type": "intent_decision", "route": "workflow", "reason": "test workflow route", "confidence": 0.9},
+            )
+        ]
+
     def stream(self, inputs, stream_mode):
-        yield (
-            "custom",
-            {"type": "intent_decision", "route": "workflow", "reason": "test workflow route", "confidence": 0.9},
-        )
+        yield from self._events()
+
+    async def astream(self, inputs, stream_mode):
+        for event in self._events():
+            yield event

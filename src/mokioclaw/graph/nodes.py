@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
-import threading
 from typing import Any
 
 from dotenv import load_dotenv
@@ -20,8 +18,10 @@ from mokioclaw.graph.memory import (
     persist_history_summary,
 )
 from mokioclaw.graph.state import MokioGraphState, TodoItem, VerificationCheck
+from mokioclaw.agent.nodes import detect_approval_resolution
+from mokioclaw.agent.workflow import build_agent_subgraph
+from mokioclaw.prompts.agent import AGENT_FALLBACK_REPLY
 from mokioclaw.prompts.intent import (
-    AGENT_PLACEHOLDER_REPLY,
     CLARIFY_MAX_ROUNDS,
     CLARIFY_PROMPT,
     FALLBACK_TEMPLATES,
@@ -34,6 +34,11 @@ from mokioclaw.prompts.stage3 import PLANNER_PROMPT, VERIFIER_PROMPT
 from mokioclaw.prompts.stage4 import CONTEXT_COMPRESSION_PROMPT
 from mokioclaw.providers.openai_provider import create_model
 from mokioclaw.rag.workflow import build_rag_subgraph
+from mokioclaw.skills.business_store import (
+    DEFAULT_DEMO_PHONE,
+    get_pending_approval,
+    update_pending_approval,
+)
 from mokioclaw.tools.todo_tool import persist_todos, write_todos
 
 
@@ -45,19 +50,63 @@ DEFAULT_TODOS = [
     "Reflect on and verify the response before finishing.",
 ]
 
-def intent_router_node(state: MokioGraphState) -> dict[str, Any]:
-    """阶段 2：五类意图识别 + 追问/unknown 计数 + 强制兜底路由。
+async def intent_router_node(state: MokioGraphState) -> dict[str, Any]:
+    """阶段 2：五类意图识别 + 追问/unknown 计数 + 强制兜底路由（阶段 4 起原生 async）。
 
     类别：rag_query / agent_service / clarify / irrelevant / unknown；
     路由：rag_answer / agent_loop / clarify / fallback（unknown 未达阈值先追问）。
+
+    阶段 4：若该会话存在未决的写操作人工确认单，用户回复"确认/取消"时短路进入
+    Agent 子图恢复执行；用户转而提出其它诉求时先作废旧确认单再正常分类。
     """
     writer = _get_writer()
+
+    # P4-16：未决人工确认单短路（规则判定优先，确定可测且不额外消耗 LLM）
+    task_text = str(state.get("task") or "")
+    workspace = str(state.get("workspace") or "")
+    pending = await _load_pending_approval(workspace)
+    resolution = detect_approval_resolution(task_text) if pending is not None else "unknown"
+    if pending is not None:
+        if resolution in ("confirmed", "cancelled"):
+            writer(
+                {
+                    "type": "intent_decision",
+                    "route": "agent_loop",
+                    "category": "agent_service",
+                    "reason": f"pending approval {resolution} → resume in agent subgraph",
+                    "confidence": 1.0,
+                    "clarify_count": 0,
+                    "unknown_count": 0,
+                }
+            )
+            return {
+                "intent_category": "agent_service",
+                "intent_route": "agent_loop",
+                "intent_reason": "pending_approval_resume",
+                "intent_confidence": 1.0,
+                "pending_slots": [],
+                "fallback_reason": "",
+                "clarify_count": 0,
+                "unknown_count": 0,
+                "pending_approval": pending,
+                "approval_resolution": resolution,
+            }
+        # 用户说了新诉求：旧确认单作废，交由正常意图分类处理
+        await _cancel_pending_approval(pending)
+        writer(
+            {
+                "type": "approval_expired",
+                "approval_id": str(pending.get("approval_id") or ""),
+                "reason": "user started a new request before confirming",
+            }
+        )
+
     category = "unknown"
     reason = "router fallback: default to unknown"
     confidence = 0.0
     pending_slots: list[str] = []
     try:
-        response = create_model().invoke(
+        response = await create_model().ainvoke(
             [
                 SystemMessage(content=INTENT_ROUTER_PROMPT),
                 HumanMessage(content=_router_input(state)),
@@ -133,13 +182,13 @@ def intent_route_fn(state: MokioGraphState) -> str:
     return str(state.get("intent_route") or "fallback")
 
 
-def clarify_node(state: MokioGraphState) -> dict[str, Any]:
-    """P2-4：按 pending_slots 生成追问话术，clarify_count += 1。"""
+async def clarify_node(state: MokioGraphState) -> dict[str, Any]:
+    """P2-4：按 pending_slots 生成追问话术，clarify_count += 1（阶段 4 起原生 async）。"""
     writer = _get_writer()
     pending_slots = [str(slot) for slot in (state.get("pending_slots") or []) if str(slot).strip()]
     question = ""
     try:
-        response = create_model().invoke(
+        response = await create_model().ainvoke(
             [
                 SystemMessage(content=CLARIFY_PROMPT),
                 HumanMessage(content=_clarify_input(state, pending_slots)),
@@ -184,14 +233,12 @@ def fallback_node(state: MokioGraphState) -> dict[str, Any]:
     return {"fallback_reason": reason, "chat_response": reply, "final_answer": reply}
 
 
-def rag_answer_node(state: MokioGraphState) -> dict[str, Any]:
-    """P3-21：RAG 检索子图挂载点（替换阶段 2 占位）。
+async def rag_answer_node(state: MokioGraphState) -> dict[str, Any]:
+    """P3-21：RAG 检索子图挂载点（阶段 4 起与主图同为原生 async）。
 
-    主图与子图状态解耦：问句进、答案+来源出。子图节点全部是 async，
-    主图当前由同步 stream 驱动（工作线程内无运行中的事件循环），
-    因此在独立事件循环里用 astream 驱动编译后的子图，并把子图 custom
-    事件（两路召回/融合分/精排分/证据门...）实时转发到主图流，接入 trace。
-    若主图本身被 astream 驱动，则在独立线程里起循环，避免嵌套事件循环。
+    主图与子图状态解耦：问句进、答案+来源出。主图由 astream 原生驱动，
+    这里直接 async for 子图 astream，并把子图 custom 事件（两路召回/融合分/
+    精排分/证据门...）实时转发到主图流，接入 trace。
     """
     writer = _get_writer()
     task = str(state.get("task") or "")
@@ -203,8 +250,8 @@ def rag_answer_node(state: MokioGraphState) -> dict[str, Any]:
     }
     writer({"type": "rag_start", "query": task})
 
-    async def _drive_subgraph() -> dict[str, Any]:
-        final_state: dict[str, Any] = {}
+    try:
+        result: dict[str, Any] = {}
         node_sequence: list[str] = []
         async for mode, chunk in build_rag_subgraph().astream(
             sub_input, stream_mode=["updates", "custom"]
@@ -215,12 +262,8 @@ def rag_answer_node(state: MokioGraphState) -> dict[str, Any]:
                 for node_name, update in chunk.items():
                     node_sequence.append(str(node_name))
                     if isinstance(update, dict):
-                        final_state.update(update)
+                        result.update(update)
         writer({"type": "rag_trace", "node_sequence": node_sequence})
-        return final_state
-
-    try:
-        result = _run_async(_drive_subgraph)
     except Exception as exc:  # 子图整体异常不打断对话，降级为话术兜底
         error = f"{type(exc).__name__}: {exc}"
         writer({"type": "rag_error", "error": error})
@@ -251,44 +294,122 @@ def rag_answer_node(state: MokioGraphState) -> dict[str, Any]:
     }
 
 
-def _run_async(factory):
-    """在同步主图节点里运行协程：无运行循环时 asyncio.run，否则开独立线程。"""
-    try:
-        asyncio.get_running_loop()
-        running_loop = True
-    except RuntimeError:
-        running_loop = False
+async def agent_loop_node(state: MokioGraphState) -> dict[str, Any]:
+    """P4-12~P4-16：Agent 深度推理子图挂载点（替换阶段 2 占位）。
 
-    if not running_loop:
-        return asyncio.run(factory())
-
-    box: dict[str, Any] = {}
-
-    def _worker() -> None:
-        try:
-            box["result"] = asyncio.run(factory())
-        except BaseException as exc:  # noqa: BLE001
-            box["error"] = exc
-
-    thread = threading.Thread(target=_worker, daemon=True)
-    thread.start()
-    thread.join()
-    if "error" in box:
-        raise box["error"]
-    return box.get("result")
-
-
-def agent_loop_node(state: MokioGraphState) -> dict[str, Any]:
-    """P2-9：Agent 占位节点（阶段 4 替换为业务推理子图）。"""
+    问句进、业务答复出：思考（bind_tools 六类 Skill）→ 多工具并行执行
+    → 反思校验（失败按 attempts 重试/兜底）→ 中文答复；写操作的人工确认
+    卡片与跨轮"确认/取消"恢复全部在子图内完成，主图只透传事件与轨迹。
+    """
     writer = _get_writer()
+    task = str(state.get("task") or "")
+    workspace = str(state.get("workspace") or "")
+
+    pending = state.get("pending_approval")
+    if pending is None:
+        pending = await _load_pending_approval(workspace)
+    resolution = str(state.get("approval_resolution") or "")
+    if pending is not None and not resolution:
+        resolution = detect_approval_resolution(task)
+
+    sub_input: dict[str, Any] = {
+        "query": task,
+        "session_context": str(state.get("session_context") or ""),
+        "phone": str(state.get("phone") or DEFAULT_DEMO_PHONE),
+        "workspace": workspace,
+        "approval_mode": str(state.get("approval_mode") or "inline"),
+        "pending_approval": pending,
+        "approval_resolution": resolution or "unknown",
+        "attempts": 0,
+        "max_attempts": int(state.get("max_attempts", 3) or 3),
+    }
     writer(
         {
-            "type": "agent_placeholder",
-            "task": state.get("task", ""),
-            "pending_slots": [str(slot) for slot in (state.get("pending_slots") or [])],
+            "type": "agent_start",
+            "query": task,
+            "has_pending_approval": pending is not None,
+            "approval_resolution": sub_input["approval_resolution"],
         }
     )
-    return {"chat_response": AGENT_PLACEHOLDER_REPLY, "final_answer": AGENT_PLACEHOLDER_REPLY}
+
+    try:
+        result: dict[str, Any] = {}
+        node_sequence: list[str] = []
+        tool_traces: list[dict[str, Any]] = []
+        async for mode, chunk in build_agent_subgraph().astream(
+            sub_input, stream_mode=["updates", "custom"]
+        ):
+            if mode == "custom":
+                writer(chunk)
+                if isinstance(chunk, dict) and chunk.get("type") in ("skill_call", "skill_result"):
+                    tool_traces.append(chunk)
+            elif isinstance(chunk, dict):
+                for node_name, update in chunk.items():
+                    node_sequence.append(str(node_name))
+                    if isinstance(update, dict):
+                        result.update(update)
+        writer({"type": "agent_trace", "node_sequence": node_sequence})
+    except Exception as exc:  # 子图整体异常不打断对话，静态话术转人工兜底
+        error = f"{type(exc).__name__}: {exc}"
+        writer({"type": "agent_error", "error": error})
+        reply = AGENT_FALLBACK_REPLY
+        return {
+            "chat_response": reply,
+            "final_answer": reply,
+            "fallback_reason": "agent_subgraph_error",
+            "tool_traces": [],
+        }
+
+    answer = str(result.get("answer") or "")
+    metadata = dict(state.get("metadata") or {})
+    if result.get("fallback_reason"):
+        metadata["agent_fallback_reason"] = result["fallback_reason"]
+    if result.get("verify_decision"):
+        metadata["agent_verify_decision"] = result["verify_decision"]
+        metadata["agent_verify_reason"] = result.get("verify_reason", "")
+    confirmation = result.get("confirmation_request")
+    if confirmation:
+        metadata["pending_confirmation"] = {
+            "approval_id": confirmation.get("approval_id", ""),
+            "skill_name": confirmation.get("skill_name", ""),
+            "summary": confirmation.get("summary", ""),
+        }
+    writer(
+        {
+            "type": "agent_finished",
+            "has_answer": bool(answer),
+            "fallback_reason": str(result.get("fallback_reason") or ""),
+            "confirmation_required": confirmation is not None,
+            "tool_trace_count": len(tool_traces),
+        }
+    )
+    return {
+        "chat_response": answer,
+        "final_answer": answer,
+        "fallback_reason": str(result.get("fallback_reason") or state.get("fallback_reason") or ""),
+        "metadata": metadata,
+        "tool_traces": tool_traces,
+    }
+
+
+async def _load_pending_approval(workspace: str) -> dict[str, Any] | None:
+    """读取会话未决人工确认单（DB 异常不阻断主流程，按无确认单处理）。"""
+    if not workspace:
+        return None
+    try:
+        return await get_pending_approval(workspace)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _cancel_pending_approval(pending: dict[str, Any]) -> None:
+    approval_id = str(pending.get("approval_id") or "")
+    if not approval_id:
+        return
+    try:
+        await update_pending_approval(approval_id, "cancelled")
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _clarify_input(state: MokioGraphState, pending_slots: list[str]) -> str:

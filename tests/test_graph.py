@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -63,6 +64,9 @@ def test_model_verifier_passes_from_json(monkeypatch, tmp_path: Path) -> None:
 
 def test_model_verifier_invalid_json_fails_and_routes_back(monkeypatch, tmp_path: Path) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content="not json")
 
@@ -111,12 +115,15 @@ def test_workflow_compiles_without_fixed_actor_node() -> None:
 
 def test_intent_router_routes_rag_query_with_model_json(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content='{"category":"rag_query","confidence":0.9,"reason":"资费咨询","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "5G 融合套餐每月多少钱", "clarify_count": 3, "unknown_count": 2})
+    result = asyncio.run(intent_router_node({"task": "5G 融合套餐每月多少钱", "clarify_count": 3, "unknown_count": 2}))
 
     assert result["intent_category"] == "rag_query"
     assert result["intent_route"] == "rag_answer"
@@ -129,12 +136,15 @@ def test_intent_router_routes_rag_query_with_model_json(monkeypatch) -> None:
 
 def test_intent_router_routes_agent_service_with_model_json(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content='{"category":"agent_service","confidence":0.85,"reason":"办理诉求","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "帮我开通国际漫游"})
+    result = asyncio.run(intent_router_node({"task": "帮我开通国际漫游"}))
 
     assert result["intent_category"] == "agent_service"
     assert result["intent_route"] == "agent_loop"
@@ -143,12 +153,15 @@ def test_intent_router_routes_agent_service_with_model_json(monkeypatch) -> None
 
 def test_intent_router_routes_clarify_and_keeps_pending_slots(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content='{"category":"clarify","confidence":0.7,"reason":"信息不全","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "帮我办一下那个", "pending_slots": ["号码"], "clarify_count": 1})
+    result = asyncio.run(intent_router_node({"task": "帮我办一下那个", "pending_slots": ["号码"], "clarify_count": 1}))
 
     assert result["intent_category"] == "clarify"
     assert result["intent_route"] == "clarify"
@@ -159,12 +172,15 @@ def test_intent_router_routes_clarify_and_keeps_pending_slots(monkeypatch) -> No
 
 def test_intent_router_routes_irrelevant_to_fallback(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content='{"category":"irrelevant","confidence":0.95,"reason":"超出客服范围","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "帮我写一首诗"})
+    result = asyncio.run(intent_router_node({"task": "帮我写一首诗"}))
 
     assert result["intent_category"] == "irrelevant"
     assert result["intent_route"] == "fallback"
@@ -174,12 +190,15 @@ def test_intent_router_routes_irrelevant_to_fallback(monkeypatch) -> None:
 
 def test_intent_router_low_confidence_treated_as_unknown(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content='{"category":"clarify","confidence":0.3,"reason":"拿不准","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "那个东西怎么样了"})
+    result = asyncio.run(intent_router_node({"task": "那个东西怎么样了"}))
 
     assert result["intent_category"] == "unknown"
     assert "low confidence" in result["intent_reason"]
@@ -189,12 +208,15 @@ def test_intent_router_low_confidence_treated_as_unknown(monkeypatch) -> None:
 
 def test_intent_router_invalid_json_defaults_to_unknown(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content="not json")
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "嗯嗯"})
+    result = asyncio.run(intent_router_node({"task": "嗯嗯"}))
 
     assert result["intent_category"] == "unknown"
     assert result["unknown_count"] == 1
@@ -203,12 +225,15 @@ def test_intent_router_invalid_json_defaults_to_unknown(monkeypatch) -> None:
 
 def test_intent_router_unknown_streak_forces_fallback(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content='{"category":"unknown","confidence":0.2,"reason":"无法判断","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "？？", "unknown_count": 1})
+    result = asyncio.run(intent_router_node({"task": "？？", "unknown_count": 1}))
 
     assert result["intent_route"] == "fallback"
     assert result["fallback_reason"] == "unknown_streak"
@@ -217,12 +242,15 @@ def test_intent_router_unknown_streak_forces_fallback(monkeypatch) -> None:
 
 def test_intent_router_clarify_exceeded_forces_fallback(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content='{"category":"clarify","confidence":0.7,"reason":"仍不明确","missing_slots":[]}')
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = intent_router_node({"task": "还是那个事", "clarify_count": 5})
+    result = asyncio.run(intent_router_node({"task": "还是那个事", "clarify_count": 5}))
 
     assert result["intent_route"] == "fallback"
     assert result["fallback_reason"] == "clarify_exceeded"
@@ -231,12 +259,15 @@ def test_intent_router_clarify_exceeded_forces_fallback(monkeypatch) -> None:
 
 def test_clarify_node_asks_question_and_increments_count(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content="请问您想查询话费还是办理套餐呢？")
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = clarify_node({"task": "帮我办一下", "clarify_count": 2, "pending_slots": ["号码"]})
+    result = asyncio.run(clarify_node({"task": "帮我办一下", "clarify_count": 2, "pending_slots": ["号码"]}))
 
     assert result["clarify_count"] == 3
     assert result["clarify_question"] == "请问您想查询话费还是办理套餐呢？"
@@ -245,12 +276,15 @@ def test_clarify_node_asks_question_and_increments_count(monkeypatch) -> None:
 
 def test_clarify_node_uses_default_question_when_model_fails(monkeypatch) -> None:
     class FakeModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             raise RuntimeError("llm down")
 
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
 
-    result = clarify_node({"task": "那个", "clarify_count": 0})
+    result = asyncio.run(clarify_node({"task": "那个", "clarify_count": 0}))
 
     assert result["clarify_count"] == 1
     assert result["final_answer"]
@@ -284,6 +318,9 @@ def test_rag_answer_node_drives_rag_subgraph(monkeypatch) -> None:
         return []
 
     class FakeRagModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content="规范的检索问句")
 
@@ -293,7 +330,7 @@ def test_rag_answer_node_drives_rag_subgraph(monkeypatch) -> None:
     monkeypatch.setattr("mokioclaw.rag.nodes.build_parent_evidence", empty_parents)
     monkeypatch.setattr("mokioclaw.rag.nodes.create_model", lambda: FakeRagModel())
 
-    result = rag_answer_node({"task": "今天天气怎么样"})
+    result = asyncio.run(rag_answer_node({"task": "今天天气怎么样"}))
 
     assert result["chat_response"] == result["final_answer"]
     # 两路召回均空、重写一次后仍无证据 → 子图兜底原因透传到主图 metadata
@@ -301,10 +338,30 @@ def test_rag_answer_node_drives_rag_subgraph(monkeypatch) -> None:
     assert result["metadata"]["rag_fallback_reason"] == "rag_no_evidence"
 
 
-def test_agent_loop_node_replies_with_placeholder() -> None:
-    result = agent_loop_node({"task": "停机保号"})
+def test_agent_loop_node_drives_agent_subgraph_with_direct_reply(monkeypatch, tmp_path: Path) -> None:
+    """阶段 4：agent_loop 不再是占位话术，而是挂载并驱动 Agent 深度推理子图。"""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "agent-node-test.db"))
+    monkeypatch.setenv("SKILL_WATCH", "0")
 
-    assert "转人工预处理中" in result["final_answer"]
+    class FakeAgentModel:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages, **kwargs):
+            return AIMessage(content="好的，这是 Agent 子图的直接回复。")
+
+        async def ainvoke(self, messages, **kwargs):
+            return AIMessage(content="好的，这是 Agent 子图的直接回复。")
+
+    monkeypatch.setattr("mokioclaw.agent.nodes.create_model", lambda: FakeAgentModel())
+
+    result = asyncio.run(
+        agent_loop_node(
+            {"task": "停机保号", "workspace": str(tmp_path / "ws"), "max_attempts": 3}
+        )
+    )
+
+    assert "Agent 子图的直接回复" in result["final_answer"]
     assert result["chat_response"] == result["final_answer"]
 
 
@@ -418,6 +475,9 @@ def test_context_compressor_removes_old_messages_and_preserves_state(monkeypatch
 
 def test_planner_writes_default_customer_service_plan(monkeypatch, tmp_path: Path) -> None:
     class FakeBoundModel:
+        async def ainvoke(self, messages, **kwargs):
+            return self.invoke(messages)
+
         def invoke(self, messages):
             return AIMessage(content="plan ready")
 

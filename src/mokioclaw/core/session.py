@@ -36,18 +36,23 @@ def session_summary_file(workspace: Path) -> Path:
     return workspace / SESSION_SUMMARY_FILE
 
 
-def load_or_create_session(workspace: Path) -> dict[str, Any]:
+async def aload_or_create_session(workspace: Path) -> dict[str, Any]:
+    """阶段 4：会话加载/创建的原生 async 版本（HTTP/SSE 链路直接 await）。"""
     workspace.mkdir(parents=True, exist_ok=True)
     workspace_key = str(workspace)
-    row = _run(_load_session_row(workspace_key))
+    row = await _load_session_row(workspace_key)
     if row is not None:
         session = _row_to_session(row, workspace)
     else:
         session = _normalize_session({}, workspace)
-        _run(_upsert_session_row(workspace_key, session))
-    # 保留人读摘要文件，便于事件展示与调试
-    _write_summary_file(workspace, session)
+        await _upsert_session_row(workspace_key, session)
+    # 保留人读摘要文件，便于事件展示与调试（小文件写，卸载到线程避免阻塞循环）
+    await asyncio.to_thread(_write_summary_file, workspace, session)
     return session
+
+
+def load_or_create_session(workspace: Path) -> dict[str, Any]:
+    return _run(aload_or_create_session(workspace))
 
 
 def append_user_turn(session: dict[str, Any], content: str) -> int:
@@ -90,14 +95,19 @@ def append_assistant_turn(
     )
 
 
-def save_session(workspace: Path, session: dict[str, Any]) -> dict[str, Any]:
+async def asave_session(workspace: Path, session: dict[str, Any]) -> dict[str, Any]:
+    """阶段 4：会话保存的原生 async 版本。"""
     workspace.mkdir(parents=True, exist_ok=True)
     session = _normalize_session(session, workspace)
     _compact_session(session)
     session["updated_at"] = utc_now()
-    _run(_upsert_session_row(str(workspace), session))
-    _write_summary_file(workspace, session)
+    await _upsert_session_row(str(workspace), session)
+    await asyncio.to_thread(_write_summary_file, workspace, session)
     return session
+
+
+def save_session(workspace: Path, session: dict[str, Any]) -> dict[str, Any]:
+    return _run(asave_session(workspace, session))
 
 
 def build_session_context(workspace: Path, session: dict[str, Any] | None = None) -> str:
@@ -255,14 +265,14 @@ def _compact_session(session: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# SQLite 持久化辅助：session.py 的公共函数保持同步签名，
-# 内部通过 asyncio.run 调用异步 DB 操作；这些函数运行在工作线程中
-# （由 api 层 asyncio.to_thread 调度），因此没有运行中的事件循环。
+# SQLite 持久化辅助：阶段 4 起 ``aload_or_create_session`` / ``asave_session``
+# 为原生 async 主实现（HTTP/SSE 链路直接 await，全链路无工作线程桥接）；
+# 同步公共函数仅作为 CLI/历史调用方的薄适配层（asyncio.run 驱动同一协程）。
 # ---------------------------------------------------------------------------
 
 
 def _run(coro):
-    """在同步上下文中执行协程。"""
+    """在同步上下文中执行协程（同步适配层使用）。"""
     return asyncio.run(coro)
 
 

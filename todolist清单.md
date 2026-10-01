@@ -11,7 +11,7 @@
 | 阶段 1 | FastAPI 服务化改造 | 9 | ✅ 完成 |
 | 阶段 2 | 意图识别与任务调度 | 10 | ✅ 完成 |
 | 阶段 3 | RAG 检索子图（LangGraph） | 22 | ✅ 完成（5 条验收门过 4 条，P95 见下方实测） |
-| 阶段 4 | Skill 工具集 + Agent 推理引擎 | 16 | ⬜ 未开始 |
+| 阶段 4 | Skill 工具集 + Agent 推理引擎 | 17 | ✅ 完成（4 条验收门全部通过，194 测试全绿） |
 | 阶段 5 | 多轮记忆与查询重写 | 9 | ⬜ 未开始 |
 | 阶段 6 | 自动化评测流水线 | 8 | ⬜ 未开始 |
 | 阶段 7 | 收尾与演示打磨 | 4 | ⬜ 未开始 |
@@ -134,31 +134,31 @@
 **目标**：agent_subgraph 上线替换占位；六个 Skill 可用；热插拔生效；全链路原生 async。
 
 ### 4A Skill 框架与工具
-- [ ] **P4-1** 新建 `skills/base.py`：Skill 基类（name / description / 参数 schema / async run）
-- [ ] **P4-2** `query_balance`：余额/实时话费查询（只读）
-- [ ] **P4-3** `query_package`：当前套餐与余量查询（只读）
-- [ ] **P4-4** `list_packages`：可办理套餐列表（只读）
-- [ ] **P4-5** `report_fault`：故障报修建单（写）
-- [ ] **P4-6** `query_fault_status`：工单进度查询（只读）
-- [ ] **P4-7** `change_package`：套餐变更办理（写，需人工确认）
-- [ ] **P4-8** SQLite 建模拟业务表 + 种子数据：`account`、`user_package`、`package_catalog`、`fault_ticket`
-- [ ] **P4-9** `skills/registry.py`：动态注册中心（扫描目录、元信息注册、按名取用）
-- [ ] **P4-10** 目录监听热加载：运行中增删 Skill 文件即生效，无需重启
-- [ ] **P4-11** Skill 管理接口：`GET/POST/DELETE /api/v1/skills`
+- [x] **P4-1** 新建 `skills/base.py`：Skill 基类（name / description / 参数 schema / async run）
+- [x] **P4-2** `query_balance`：余额/实时话费查询（只读）
+- [x] **P4-3** `query_package`：当前套餐与余量查询（只读）
+- [x] **P4-4** `list_packages`：可办理套餐列表（只读）
+- [x] **P4-5** `report_fault`：故障报修建单（写）
+- [x] **P4-6** `query_fault_status`：工单进度查询（只读）
+- [x] **P4-7** `change_package`：套餐变更办理（写，需人工确认）
+- [x] **P4-8** SQLite 建模拟业务表 + 种子数据：`account`、`user_package`、`package_catalog`、`fault_ticket`、`pending_approval`
+- [x] **P4-9** `skills/registry.py`：动态注册中心（扫描目录、元信息注册、按名取用）
+- [x] **P4-10** 目录监听热加载：运行中增删 Skill 文件即生效，无需重启
+- [x] **P4-11** Skill 管理接口：`GET/POST/DELETE /api/v1/skills`
 
 ### 4B Agent 推理子图
-- [ ] **P4-12** 思考节点（planner 改造）：客服域 prompt，分析对话状态决定调用哪些 Skill
-- [ ] **P4-13** 工具编排节点：单轮支持多工具并行（asyncio.gather）
-- [ ] **P4-14** 反思校验节点（verifier 改造）：校验工具结果业务一致性（如办理状态异常检测）
-- [ ] **P4-15** 失败计数 `attempts`：异常/校验失败超阈值走兜底话术
-- [ ] **P4-16** `change_package` 接入现有 approval 机制：办理前推确认，用户确认后才执行
-- [ ] **P4-17** 移除阶段 1 的 `asyncio.to_thread` 过渡代码，全部改为原生 async
+- [x] **P4-12** 思考节点（planner 改造）：客服域 prompt，分析对话状态决定调用哪些 Skill（[agent/nodes.py](./src/mokioclaw/agent/nodes.py) `think_node`，实时 bind_tools 注册表）
+- [x] **P4-13** 工具编排节点：单轮支持多工具并行（asyncio.gather，`act_node` 结果按调用序保序）
+- [x] **P4-14** 反思校验节点（verifier 改造）：校验工具结果业务一致性（`reflect_node`，致命错误码 account_not_found/same_package/approval_denied 等直接 fallback 不重试）
+- [x] **P4-15** 失败计数 `attempts`：异常/校验失败超阈值走兜底话术（`max_attempts` 默认 3）
+- [x] **P4-16** `change_package` 接入现有 approval 机制：办理前推确认，用户确认后才执行（pending_approval 落库跨轮；intent_router 前置确认/取消短路；inline/auto/deny 三策略）
+- [x] **P4-17** 移除阶段 1 的 `asyncio.to_thread` 过渡代码，全部改为原生 async（主图节点/RAG LLM 调用 ainvoke；core/agent native async 生成器，删除 queue+producer 线程桥接）
 
 **🚪 阶段 4 验收门**
-- [ ] 查余额链路走通（单工具）
-- [ ] 宽带报修走通（建单 + 查状态，多工具）
-- [ ] 套餐变更走通（含人工确认卡片）
-- [ ] 运行中新增测试 Skill，不重启即可被发现和调用
+- [x] 查余额链路走通（单工具）—— test_agent_subgraph + test_api_e2e HTTP 链路
+- [x] 宽带报修走通（建单 + 查状态，多工具）—— asyncio.gather 并行两工具
+- [x] 套餐变更走通（含人工确认卡片）—— 两回合：确认卡片落 pending → 确认后 executed
+- [x] 运行中新增测试 Skill，不重启即可被发现和调用 —— POST /api/v1/skills 后下一轮对话即调用（test_api_e2e）+ watcher 线程落盘发现（test_skill_registry）
 
 ---
 
@@ -253,4 +253,10 @@
 | 2026-10-01 | P3-14 | CPU 上 Cross-Encoder 成本与候选数线性（热身后约 0.2s/对，首次另含约 7s 模型加载）：20 候选 P95≈2.7s，新增 `RAG_RERANK_INPUT_TOP_N=8`（P95≈2.4s 且 20/20 不丢召回；N=6 约 1.7s 但"新装宽带几天"这类弱相关问的正确片段排在 RRF 第 7 位会被截掉，19/20）。冷启动由 FastAPI lifespan 后台线程预热（`RAG_PREWARM=0` 可关）。 |
 | 2026-10-01 | P3-9/测试 | ①上传接口依赖 `python-multipart`，FastAPI 的 `UploadFile` 不会自动安装，需 `uv add python-multipart`。②子图测试统一在 `mokioclaw.rag.nodes` 命名空间打桩（节点是 `from ...retrieval import bm25_search` 形式导入）；阶段 2 意图测试里 rag_query 用例会真实挂载子图，必须同步打桩检索层走空召回兜底，否则会真跑 BGE/Milvus。全量 147 条测试通过（新增 14 条 RAG 子图测试）。 |
 | 2026-10-01 | P3-10 | 入库链路用短连接 aiosqlite（每次操作开新连接）而非全局 SQLAlchemy 引擎：子图在 rag_answer 节点内用 `asyncio.run` 起新事件循环，跨循环复用连接会报错；参考 core/session.py 的既有模式。8 份知识文档（md/html/txt 三种格式）验证 Docling HTML 解析无标签残留，共 46 个父分片/80 个子分片。 |
+| 2026-10-01 | P4-9 | SkillRegistry 两个隐蔽 bug：①初始化 `_dirs` 时元组括号写成 `(Path(...)), "external"`（单元素元组漏逗号会被解包成单值），目录结构直接破坏；②内置 Skill 热卸载最初用 `set` 记路径，导致注销后永远无法恢复——改为 `dict[路径→注销时 mtime_ns]`：mtime 未变保持注销，文件内容变更（mtime 变化）自动恢复。另：改名热重载分支误用 `LoadedSkill.name`（dataclass 无此字段，应为 `.skill.name`），文件内改 Skill 名会崩。 |
+| 2026-10-01 | P4-12/P4-17 | LangGraph 1.x 铁律：图中只要存在 async 节点，整张图必须用 `astream/ainvoke` 驱动（同步 `.stream()` 报 `No synchronous function provided`）。阶段 4 主图入口节点（intent_router/clarify/rag_answer/agent_loop）全部 async 化，core/agent 的 native async 生成器直接 astream；阶段 1「工作线程 + queue 回流」桥接删除，仅 legacy complex workflow 保留 `asyncio.to_thread` 逐元素适配。测试侧所有入口 Fake 必须同时实现 `stream` 与 `astream`。 |
+| 2026-10-01 | P4-17 | `_iter_async` 同步适配生成器内局部变量切勿命名 `queue`：会遮蔽模块顶 `import queue`，后续 `queue.Empty` 引用抛 `UnboundLocalError`。改名 `outbox` 解决。 |
+| 2026-10-01 | P4-16 | 跨轮确认的状态回写时序：approval_entry 确认分支最初返回 `pending_approval: None`，导致随后的 act_node 读不到 approval_id，确认单永远停在 pending。正确做法是 entry 保留 pending → act 执行后按结果回写 executed/failed 并清空；取消/新诉求分支才在 entry 立即置 cancelled。意图路由前置短路（_load_pending_approval + 确认/取消关键词识别）保证第二轮「确认办理」不经过 LLM 分类直达 Agent 子图。 |
+| 2026-10-01 | P4-13 | asyncio.gather 多工具并行的真实语义：建单与查单并发时查状态不保证读到本轮新单（提交时序竞争），验收以「两工具均成功 + 建单结果自带工单号 + 号码维度历史单可见」为准；act_node 对 gather 结果再按 calls 顺序排序，保证 tool_traces 与调用顺序一致。 |
+| 2026-10-01 | P4 测试 | AgentSubState 是 TypedDict 通道白名单：节点返回但 schema 未声明的键（chat_response/final_answer）会被 LangGraph 从最终 state 丢弃（astream updates 流里仍可见，主图靠累积 updates 取 answer 不受影响）。已在 state 显式声明输出通道与测试注入键 `_registry`。新增测试 47 条（test_skills 16 / test_skill_registry 10 / test_agent_subgraph 16 / test_api_e2e 5），全量 194 条通过。 |
 | | | |

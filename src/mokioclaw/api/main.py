@@ -17,8 +17,10 @@ from fastapi import FastAPI
 
 from mokioclaw.api.routes.chat import router as chat_router
 from mokioclaw.api.routes.knowledge import router as knowledge_router
+from mokioclaw.api.routes.skills import router as skills_router
 from mokioclaw.db import init_db, resolve_db_path
 from mokioclaw.db.engine import dispose_engine
+from mokioclaw.skills.registry import get_registry, shutdown_registry
 
 
 def _prewarm_rag_models() -> None:
@@ -39,11 +41,14 @@ async def lifespan(app: FastAPI):
     load_dotenv()
     # 建库（幂等）；RAG 模型后台预加载（RAG_PREWARM=0 可关闭）
     await init_db()
+    # Skill 注册中心：扫描内置/外部目录并开启文件监听热加载
+    get_registry()
     if os.getenv("RAG_PREWARM", "1") != "0":
         threading.Thread(target=_prewarm_rag_models, name="rag-prewarm", daemon=True).start()
     try:
         yield
     finally:
+        shutdown_registry()
         await dispose_engine()
 
 
@@ -56,6 +61,7 @@ app = FastAPI(
 
 app.include_router(chat_router)
 app.include_router(knowledge_router)
+app.include_router(skills_router)
 
 
 @app.get("/health", tags=["system"])

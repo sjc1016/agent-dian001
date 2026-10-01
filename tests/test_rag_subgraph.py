@@ -62,6 +62,9 @@ class _FakeRagModel:
             return AIMessage(content=self._rewrite)
         return AIMessage(content=self._answer)
 
+    async def ainvoke(self, messages, **kwargs):
+        return self.invoke(messages)
+
 
 def _patch_hit_path(
     monkeypatch,
@@ -374,9 +377,11 @@ def test_parent_lookup_numbers_sources_and_respects_char_budget(monkeypatch) -> 
 # ---------------------------------------------------------------------------
 
 
-def test_main_graph_rag_query_routes_into_rag_subgraph(monkeypatch) -> None:
+def test_main_graph_rag_query_routes_into_rag_subgraph(monkeypatch, tmp_path) -> None:
     """主图 rag_query → rag_answer 节点内挂载子图，custom 事件透传到主流。"""
     _patch_hit_path(monkeypatch)
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "rag-main-test.db"))
+    monkeypatch.setenv("SKILL_WATCH", "0")
 
     payload = json.dumps(
         {"category": "rag_query", "confidence": 0.95, "reason": "资费咨询", "missing_slots": []},
@@ -387,17 +392,24 @@ def test_main_graph_rag_query_routes_into_rag_subgraph(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content=payload)
 
+        async def ainvoke(self, messages, **kwargs):
+            return AIMessage(content=payload)
+
     monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeIntentModel())
 
-    updates: dict[str, Any] = {}
-    rag_event_types: list[str] = []
-    for mode, chunk in build_entry_workflow().stream(
-        {"task": "199套餐多少流量"}, stream_mode=["updates", "custom"]
-    ):
-        if mode == "updates" and isinstance(chunk, dict):
-            updates.update(chunk)
-        elif mode == "custom" and isinstance(chunk, dict) and str(chunk.get("type", "")).startswith("rag_"):
-            rag_event_types.append(chunk["type"])
+    async def run() -> tuple[dict[str, Any], list[str]]:
+        updates: dict[str, Any] = {}
+        rag_event_types: list[str] = []
+        async for mode, chunk in build_entry_workflow().astream(
+            {"task": "199套餐多少流量"}, stream_mode=["updates", "custom"]
+        ):
+            if mode == "updates" and isinstance(chunk, dict):
+                updates.update(chunk)
+            elif mode == "custom" and isinstance(chunk, dict) and str(chunk.get("type", "")).startswith("rag_"):
+                rag_event_types.append(chunk["type"])
+        return updates, rag_event_types
+
+    updates, rag_event_types = asyncio.run(run())
 
     assert updates["intent_router"]["intent_route"] == "rag_answer"
     assert updates["rag_answer"]["final_answer"] == "199 元档含 100GB 流量[1]。"

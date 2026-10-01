@@ -13,7 +13,6 @@ START  fan-out 到 retrieve_bm25 / retrieve_dense（并行）
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -292,12 +291,11 @@ async def rewrite_once_node(state: RagSubState) -> dict[str, Any]:
     rewritten = ""
     error = ""
     try:
-        response = await asyncio.to_thread(
-            create_model().invoke,
+        response = await create_model().ainvoke(
             [
                 SystemMessage(content=RAG_REWRITE_PROMPT),
                 HumanMessage(content=query),
-            ],
+            ]
         )
         rewritten = str(getattr(response, "content", "") or "").strip()
     except Exception as exc:
@@ -344,7 +342,7 @@ async def generate_node(state: RagSubState) -> dict[str, Any]:
     answer = ""
     error = ""
     try:
-        response = await asyncio.to_thread(create_model().invoke, messages)
+        response = await create_model().ainvoke(messages)
         answer = str(getattr(response, "content", "") or "").strip()
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"

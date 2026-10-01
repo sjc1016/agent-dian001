@@ -84,6 +84,13 @@ class MokioGraphState(TypedDict, total=False):
     session_id: str
     session_turn: int
     session_context: str
+    # 阶段 4：业务 Agent 子图入参（workspace 隔离会话与待审批单；phone 为会话绑定号码）
+    workspace: str
+    phone: str
+    approval_mode: str  # inline / auto / deny
+    pending_approval: dict[str, Any] | None
+    approval_resolution: str  # confirmed / cancelled / unknown
+    tool_traces: list[dict[str, Any]]  # Skill 调用轨迹（P6 评测消费）
     last_actor_summary: str
     research_notes: str
     sources: list[SourceItem]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 import threading
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator
@@ -13,11 +14,11 @@ from langgraph.graph import add_messages
 from mokioclaw.core.checkpoint import CheckpointManager, load_resume_inputs, normalize_checkpoint_mode
 from mokioclaw.core.paths import default_workspace
 from mokioclaw.core.session import (
+    aload_or_create_session,
     append_assistant_turn,
     append_user_turn,
+    asave_session,
     build_session_context,
-    load_or_create_session,
-    save_session,
     session_started_event,
     session_turn_saved_event,
     session_turn_started_event,
@@ -25,6 +26,7 @@ from mokioclaw.core.session import (
 from mokioclaw.core.state import RuntimeState
 from mokioclaw.core.trace import TraceRecorder, normalize_trace_mode
 from mokioclaw.graph.workflow import build_complex_workflow, build_entry_workflow
+from mokioclaw.skills.business_store import DEFAULT_DEMO_PHONE
 
 
 def create_runtime(
@@ -66,18 +68,17 @@ def stream_agent_events(
 ) -> Iterator[dict[str, Any]]:
     resume_path = resume_workspace.expanduser() if resume_workspace is not None else None
     if resume_path is None:
-        route = "workflow"
+        # 阶段 4：入口图节点全部原生 async，只能用 astream 驱动；
+        # 本函数是给 CLI/历史测试用的同步入口，这里用一次性事件循环收集入口段事件。
         entry_state: dict[str, Any] = {"task": task or "", "messages": []}
-        for mode, event in build_entry_workflow().stream(entry_state, stream_mode=["updates", "custom"]):
+        route, entry_events = asyncio.run(_collect_entry_events(entry_state))
+        for mode, event in entry_events:
             if mode == "custom":
                 yield {"type": "custom_event", "event": event}
-                if isinstance(event, dict) and event.get("type") == "intent_decision":
-                    route = str(event.get("route") or "workflow")
             else:
-                _merge_graph_update(entry_state, event)
                 yield {"type": "graph_event", "event": event}
         if route != "workflow":
-            # 阶段 2：五类意图均在入口图内完成（含占位分支），不再进入 complex 工作流
+            # 阶段 2 起：五类意图均在入口图内完成，不再进入 complex 工作流
             return
 
     selected_workspace = resume_path or workspace
@@ -154,6 +155,146 @@ def stream_agent_events(
         yield {"type": "custom_event", "event": trace_event}
 
 
+async def _collect_entry_events(
+    entry_state: dict[str, Any],
+) -> tuple[str, list[tuple[str, Any]]]:
+    """用 astream 驱动入口图，收集 (mode, event) 序列并同步合并状态到 entry_state。"""
+    route = "workflow"
+    events: list[tuple[str, Any]] = []
+    async for mode, event in build_entry_workflow().astream(
+        entry_state, stream_mode=["updates", "custom"]
+    ):
+        events.append((mode, event))
+        if mode == "custom":
+            if isinstance(event, dict) and event.get("type") == "intent_decision":
+                route = str(event.get("route") or "workflow")
+        else:
+            _merge_graph_update(entry_state, event)
+    return route, events
+
+
+async def _stream_session_events_native(
+    task: str | None = None,
+    *,
+    session_workspace: Path | None = None,
+    max_attempts: int = 3,
+    approval_mode: str = "inline",
+    phone: str | None = None,
+    checkpoint_mode: str | None = None,
+    resume_workspace: Path | None = None,
+    trace_mode: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """阶段 4：会话事件流的原生 async 实现（无工作线程桥接）。
+
+    会话读写走 aiosqlite，入口图（含 RAG / Agent 两个全 async 子图）由 astream
+    直接驱动；五类意图全部在入口图内闭环，不再进入旧 complex 工作流。
+    """
+    workspace = (resume_workspace or session_workspace or default_workspace()).expanduser()
+    workspace.mkdir(parents=True, exist_ok=True)
+    session = await aload_or_create_session(workspace)
+    resumed = resume_workspace is not None
+    yield {"type": "custom_event", "event": session_started_event(workspace, session, resumed=resumed)}
+    yield {"type": "workspace", "path": str(workspace)}
+
+    if not task:
+        return
+
+    turn = append_user_turn(session, task)
+    await asave_session(workspace, session)
+    yield {"type": "custom_event", "event": session_turn_started_event(workspace, session, turn=turn, task=task)}
+    session_context = await asyncio.to_thread(build_session_context, workspace, session)
+
+    entry_state: dict[str, Any] = {
+        "task": task or "",
+        "messages": [],
+        "session_id": session.get("session_id", ""),
+        "session_turn": turn,
+        "session_context": session_context,
+        # 阶段 2：跨轮对话管控计数与待确认槽位（由会话持久化注入）
+        "clarify_count": int(session.get("clarify_count", 0) or 0),
+        "unknown_count": int(session.get("unknown_count", 0) or 0),
+        "pending_slots": list(session.get("pending_slots", []) or []),
+        # 阶段 4：业务 Agent 子图入参
+        "workspace": str(workspace),
+        "phone": str(phone or DEFAULT_DEMO_PHONE),
+        "approval_mode": approval_mode,
+        "max_attempts": max_attempts,
+    }
+
+    route = "workflow"
+    async for mode, event in build_entry_workflow().astream(
+        entry_state, stream_mode=["updates", "custom"]
+    ):
+        if mode == "custom":
+            yield {"type": "custom_event", "event": event}
+            if isinstance(event, dict) and event.get("type") == "intent_decision":
+                route = str(event.get("route") or "workflow")
+        else:
+            _merge_graph_update(entry_state, event)
+            yield {"type": "graph_event", "event": event}
+
+    if route == "workflow":
+        # 遗留路径：仅旧 complex 工作流（planner/verifier 同步图）仍从此进入。
+        # 客服五类意图永远不会路由到这里；该分支用 to_thread 驱动同步迭代器，
+        # 不影响主链路的原生 async 性质。
+        final_answer = ""
+        complex_events = _stream_complex_workflow(
+            task=task,
+            workspace=workspace,
+            max_attempts=max_attempts,
+            approval_mode=approval_mode,
+            approval_handler=None,
+            checkpoint_mode=checkpoint_mode,
+            resume_workspace=resume_workspace,
+            trace_mode=trace_mode,
+            session=session,
+            turn=turn,
+            session_context=session_context,
+        )
+        async for event in _aiter_sync(complex_events):
+            final_answer = _final_answer_from_event(event) or final_answer
+            yield event
+        append_assistant_turn(
+            session, turn=turn, route="workflow", content=final_answer, summary=final_answer
+        )
+        await asave_session(workspace, session)
+        yield {
+            "type": "custom_event",
+            "event": session_turn_saved_event(workspace, session, turn=turn, route="workflow"),
+        }
+        return
+
+    # 五类意图全部在入口图内完成（rag_answer / agent_loop / clarify / fallback）
+    response = str(entry_state.get("final_answer") or entry_state.get("chat_response") or "")
+    session["clarify_count"] = int(entry_state.get("clarify_count", 0) or 0)
+    session["unknown_count"] = int(entry_state.get("unknown_count", 0) or 0)
+    session["pending_slots"] = list(entry_state.get("pending_slots", []) or [])
+    append_assistant_turn(session, turn=turn, route=route, content=response, summary=response)
+    await asave_session(workspace, session)
+    yield {"type": "custom_event", "event": session_turn_saved_event(workspace, session, turn=turn, route=route)}
+
+
+async def _aiter_sync(iterator: Iterator[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+    """把同步迭代器逐元素搬到工作线程（仅遗留 complex workflow 分支使用）。"""
+    sentinel = object()
+
+    def _next():
+        try:
+            return next(iterator)
+        except StopIteration:
+            return sentinel
+        except BaseException as exc:  # noqa: BLE001
+            return exc
+
+    while True:
+        item = await asyncio.to_thread(_next)
+        if item is sentinel:
+            break
+        if isinstance(item, BaseException):
+            raise item
+        yield item
+
+
 def stream_session_events(
     task: str | None = None,
     *,
@@ -165,74 +306,21 @@ def stream_session_events(
     resume_workspace: Path | None = None,
     trace_mode: str | None = None,
 ) -> Iterator[dict[str, Any]]:
-    workspace = (resume_workspace or session_workspace or default_workspace()).expanduser()
-    workspace.mkdir(parents=True, exist_ok=True)
-    session = load_or_create_session(workspace)
-    resumed = resume_workspace is not None
-    yield {"type": "custom_event", "event": session_started_event(workspace, session, resumed=resumed)}
-    yield {"type": "workspace", "path": str(workspace)}
+    """同步会话事件流：阶段 4 起为原生 async 核心的线程桥接适配层（供 CLI/历史测试）。
 
-    if not task:
-        return
-
-    turn = append_user_turn(session, task)
-    save_session(workspace, session)
-    yield {"type": "custom_event", "event": session_turn_started_event(workspace, session, turn=turn, task=task)}
-    session_context = build_session_context(workspace, session)
-
-    route = "workflow"
-    entry_state: dict[str, Any] = {
-        "task": task or "",
-        "messages": [],
-        "session_id": session.get("session_id", ""),
-        "session_turn": turn,
-        "session_context": session_context,
-        # 阶段 2：跨轮对话管控计数与待确认槽位（由会话持久化注入）
-        "clarify_count": int(session.get("clarify_count", 0) or 0),
-        "unknown_count": int(session.get("unknown_count", 0) or 0),
-        "pending_slots": list(session.get("pending_slots", []) or []),
-    }
-    for mode, event in build_entry_workflow().stream(entry_state, stream_mode=["updates", "custom"]):
-        if mode == "custom":
-            yield {"type": "custom_event", "event": event}
-            if isinstance(event, dict) and event.get("type") == "intent_decision":
-                route = str(event.get("route") or "workflow")
-        else:
-            _merge_graph_update(entry_state, event)
-            yield {"type": "graph_event", "event": event}
-
-    if route != "workflow":
-        # 阶段 2：五类意图（rag 占位/agent 占位/追问澄清/兜底）全部在入口图内完成
-        response = str(entry_state.get("final_answer") or entry_state.get("chat_response") or "")
-        session["clarify_count"] = int(entry_state.get("clarify_count", 0) or 0)
-        session["unknown_count"] = int(entry_state.get("unknown_count", 0) or 0)
-        session["pending_slots"] = list(entry_state.get("pending_slots", []) or [])
-        append_assistant_turn(session, turn=turn, route=route, content=response, summary=response)
-        save_session(workspace, session)
-        yield {"type": "custom_event", "event": session_turn_saved_event(workspace, session, turn=turn, route=route)}
-        return
-
-    workflow_events = _stream_complex_workflow(
-        task=task,
-        workspace=workspace,
-        max_attempts=max_attempts,
-        approval_mode=approval_mode,
-        approval_handler=approval_handler,
-        checkpoint_mode=checkpoint_mode,
-        resume_workspace=resume_workspace,
-        trace_mode=trace_mode,
-        session=session,
-        turn=turn,
-        session_context=session_context,
+    生产 HTTP 链路请使用 :func:`stream_session_events_async`，全程无桥接。
+    """
+    yield from _iter_async(
+        _stream_session_events_native(
+            task,
+            session_workspace=session_workspace,
+            max_attempts=max_attempts,
+            approval_mode=approval_mode,
+            checkpoint_mode=checkpoint_mode,
+            resume_workspace=resume_workspace,
+            trace_mode=trace_mode,
+        )
     )
-    final_answer = ""
-    for event in workflow_events:
-        final_answer = _final_answer_from_event(event) or final_answer
-        yield event
-
-    append_assistant_turn(session, turn=turn, route="workflow", content=final_answer, summary=final_answer)
-    save_session(workspace, session)
-    yield {"type": "custom_event", "event": session_turn_saved_event(workspace, session, turn=turn, route="workflow")}
 
 
 def _stream_complex_workflow(
@@ -392,12 +480,14 @@ def _final_answer_from_event(event: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 阶段 1：异步包装 + SSE 格式转换
+# 阶段 4：原生 async 会话流 + 同步适配层 + SSE 格式转换
 #
-# graph 内部的 LLM 调用与工具调用目前仍是同步的（阶段 4 会改为原生 async）。
-# 本阶段通过把同步生成器放到工作线程中执行（asyncio.to_thread 等价实现），
-# 避免阻塞 FastAPI 的事件循环；事件通过 asyncio.Queue 跨线程传递，
-# 由异步生成器逐条 yield，再由 SSE 接口推送给客户端。
+# HTTP/SSE 链路（chat.py）直接 async for 原生 async 生成器
+# ``_stream_session_events_native``：会话 aiosqlite 读写、入口图 astream、
+# RAG/Agent 子图全部原生 async，全链路无工作线程桥接。
+#
+# 仅历史同步调用方（CLI 直调/旧测试）通过 ``_iter_async`` 在独立线程的
+# 一次性事件循环里驱动同一 async 核心，事件经队列回流为同步迭代器。
 # ---------------------------------------------------------------------------
 
 
@@ -411,48 +501,51 @@ async def stream_session_events_async(
     max_attempts: int = 3,
     approval_mode: str = "inline",
     approval_handler=None,
+    phone: str | None = None,
     checkpoint_mode: str | None = None,
     resume_workspace: Path | None = None,
     trace_mode: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """``stream_session_events`` 的异步版本。
+    """会话事件流的原生 async 版本（FastAPI SSE 直接消费，无任何桥接线程）。"""
+    async for event in _stream_session_events_native(
+        task,
+        session_workspace=session_workspace,
+        max_attempts=max_attempts,
+        approval_mode=approval_mode,
+        phone=phone,
+        checkpoint_mode=checkpoint_mode,
+        resume_workspace=resume_workspace,
+        trace_mode=trace_mode,
+    ):
+        yield event
 
-    同步生成器在工作线程中运行，事件通过队列桥接到异步生成器。
-    """
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[Any] = asyncio.Queue()
 
-    def _producer() -> None:
-        try:
-            for event in stream_session_events(
-                task,
-                session_workspace=session_workspace,
-                max_attempts=max_attempts,
-                approval_mode=approval_mode,
-                approval_handler=approval_handler,
-                checkpoint_mode=checkpoint_mode,
-                resume_workspace=resume_workspace,
-                trace_mode=trace_mode,
-            ):
-                loop.call_soon_threadsafe(queue.put_nowait, event)
-        except Exception as exc:  # noqa: BLE001
-            loop.call_soon_threadsafe(queue.put_nowait, exc)
-        finally:
-            loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
+def _iter_async(aiterator: AsyncIterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """把 async 生成器适配为同步迭代器：独立线程跑一次性事件循环 + 队列回流。"""
+    outbox: queue.Queue[Any] = queue.Queue()
 
-    thread = threading.Thread(target=_producer, daemon=True)
+    def _worker() -> None:
+        async def _drain() -> None:
+            try:
+                async for event in aiterator:
+                    outbox.put(event)
+            except BaseException as exc:  # noqa: BLE001
+                outbox.put(exc)
+            finally:
+                outbox.put(_SENTINEL)
+
+        asyncio.run(_drain())
+
+    thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
-
-    try:
-        while True:
-            item = await queue.get()
-            if item is _SENTINEL:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield item
-    finally:
-        thread.join(timeout=1)
+    while True:
+        item = outbox.get()
+        if item is _SENTINEL:
+            break
+        if isinstance(item, BaseException):
+            raise item
+        yield item
+    thread.join(timeout=1)
 
 
 def event_to_sse(event: dict[str, Any]) -> str:
