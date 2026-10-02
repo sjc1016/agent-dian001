@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mokioclaw.core.state import RuntimeState
-from mokioclaw.core.trace import TraceRecorder
+from congclaw.core.state import RuntimeState
+from congclaw.core.trace import TraceRecorder
 
 
 def test_trace_recorder_writes_events_summary_and_timeline(tmp_path: Path) -> None:
@@ -71,7 +71,7 @@ def test_trace_recorder_off_mode_does_not_create_files(tmp_path: Path) -> None:
     event = trace.end(status="finished")
 
     assert event is None
-    assert not (tmp_path / ".mokioclaw" / "traces").exists()
+    assert not (tmp_path / ".congclaw" / "traces").exists()
 
 
 def test_trace_recorder_write_errors_do_not_raise(tmp_path: Path, monkeypatch) -> None:

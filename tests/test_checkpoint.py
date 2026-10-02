@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
-from mokioclaw.core.checkpoint import (
+from congclaw.core.checkpoint import (
     CHECKPOINT_ROOT,
     CheckpointManager,
     build_light_resume_inputs,
@@ -16,7 +16,7 @@ from mokioclaw.core.checkpoint import (
     deserialize_state,
     workspace_manifest,
 )
-from mokioclaw.core.state import RuntimeState
+from congclaw.core.state import RuntimeState
 
 
 def sample_state(runtime: RuntimeState) -> dict:
@@ -114,7 +114,7 @@ def test_light_resume_context_includes_workspace_memory(tmp_path: Path) -> None:
 
     inputs = build_light_resume_inputs(runtime, max_attempts=5)
 
-    assert "Continue this MokioClaw task" in inputs["task"]
+    assert "Continue this CongClaw task" in inputs["task"]
     assert "TODO from disk" in inputs["context_summary"]
     assert "Important note" in inputs["context_summary"]
     assert "History summary" in inputs["context_summary"]
@@ -125,20 +125,20 @@ def test_light_resume_context_includes_workspace_memory(tmp_path: Path) -> None:
 def test_light_resume_normalizes_repeated_resume_prefix(tmp_path: Path) -> None:
     runtime = RuntimeState(workspace=tmp_path, checkpoint_mode="light")
     repeated = (
-        "Continue this MokioClaw task from the checkpoint: "
-        "Continue the interrupted MokioClaw task from the checkpoint: "
+        "Continue this CongClaw task from the checkpoint: "
+        "Continue the interrupted CongClaw task from the checkpoint: "
         "original task"
     )
     CheckpointManager(runtime, task=repeated).save({**sample_state(runtime), "task": repeated}, status="interrupted", latest_node="planner")
 
     inputs = build_light_resume_inputs(runtime)
 
-    assert inputs["task"] == "Continue this MokioClaw task from the checkpoint: original task"
+    assert inputs["task"] == "Continue this CongClaw task from the checkpoint: original task"
 
 
 def test_normalize_resume_task_strips_nested_prefixes() -> None:
     assert normalize_resume_task(
-        "Continue this MokioClaw task from the checkpoint: Continue this MokioClaw task from the checkpoint: demo"
+        "Continue this CongClaw task from the checkpoint: Continue this CongClaw task from the checkpoint: demo"
     ) == "demo"
 
 

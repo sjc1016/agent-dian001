@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "updated_at": "2026-10-01T08:54:06.425372+00:00",
+  "mode": "light",
+  "status": "started",
+  "workspace": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-165404-f72426",
+  "checkpoint_dir": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-165404-f72426\\.mokioclaw\\checkpoints",
+  "checkpoint_file": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-165404-f72426\\.mokioclaw\\checkpoints\\checkpoint.json",
+  "recovery_file": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-165404-f72426\\.mokioclaw\\checkpoints\\RECOVERY.md",
+  "state_file": "",
+  "events_file": "",
+  "task": "hello",
+  "latest_node": "start",
+  "next_node": "",
+  "attempts": 0,
+  "max_attempts": 3,
+  "summary": {
+    "plan_summary": "",
+    "todos": [],
+    "todo_count": 0,
+    "acceptance_criteria": [],
+    "verification_commands": [],
+    "passed": null,
+    "attempts": 0,
+    "sources": [],
+    "source_count": 0,
+    "research_notes": "",
+    "code_agent_summary": "",
+    "verifier_summary": "",
+    "last_error": "",
+    "context_summary": "",
+    "history_summary": "",
+    "final_answer": ""
+  },
+  "workspace_manifest": [
+    {
+      "path": ".mokioclaw/traces/trace-20261001-165404-1b988b/events.jsonl",
+      "size": 362,
+      "mtime": "2026-10-01T08:54:04.581672+00:00"
+    },
+    {
+      "path": "SESSION_SUMMARY.md",
+      "size": 377,
+      "mtime": "2026-10-01T08:54:04.501674+00:00"
+    }
+  ],
+  "git": {
+    "dir": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-165404-f72426\\.mokioclaw\\checkpoints\\git",
+    "commit": "d4a66d0",
+    "error": null
+  },
+  "resume_command": "uv run mokioclaw --resume 'E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-165404-f72426'"
+}

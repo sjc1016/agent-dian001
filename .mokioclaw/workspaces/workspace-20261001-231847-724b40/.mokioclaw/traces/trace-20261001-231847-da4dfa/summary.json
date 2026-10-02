@@ -1,0 +1,25 @@
+{
+  "trace_id": "trace-20261001-231847-da4dfa",
+  "status": "finished",
+  "task": "帮我办这个",
+  "workspace": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-231847-724b40",
+  "trace_dir": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-231847-724b40\\.mokioclaw\\traces\\trace-20261001-231847-da4dfa",
+  "events_file": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-231847-724b40\\.mokioclaw\\traces\\trace-20261001-231847-da4dfa\\events.jsonl",
+  "summary_file": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-231847-724b40\\.mokioclaw\\traces\\trace-20261001-231847-da4dfa\\summary.json",
+  "started_at": "2026-10-01T15:18:47.666026+00:00",
+  "ended_at": "2026-10-01T15:18:49.809922+00:00",
+  "duration_ms": 2144,
+  "event_count": 12,
+  "node_visits": {
+    "clarify": 1,
+    "intent_router": 1,
+    "query_rewrite": 1
+  },
+  "key_event_types": {
+    "clarify_question": 1,
+    "intent_decision": 1,
+    "query_rewrite": 1,
+    "session_turn_saved": 1
+  },
+  "errors": []
+}

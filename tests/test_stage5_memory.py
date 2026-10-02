@@ -20,23 +20,23 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage
 
-from mokioclaw.core.agent import stream_session_events_async
-from mokioclaw.db.engine import dispose_engine
-from mokioclaw.graph import profile_store
-from mokioclaw.graph.memory import (
+from congclaw.core.agent import stream_session_events_async
+from congclaw.db.engine import dispose_engine
+from congclaw.graph import profile_store
+from congclaw.graph.memory import (
     assemble_layered_messages,
     build_customer_memory,
     compose_layered_content,
     render_evidence_section,
     render_memory_sections,
 )
-from mokioclaw.graph.nodes import query_rewrite_node
-from mokioclaw.graph.profile_store import (
+from congclaw.graph.nodes import query_rewrite_node
+from congclaw.graph.profile_store import (
     aconsolidate_user_profile,
     aget_user_profile,
     aupsert_user_profile,
 )
-from mokioclaw.graph.workflow import build_entry_workflow
+from congclaw.graph.workflow import build_entry_workflow
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ def _intent_json(category: str) -> AIMessage:
 
 def _patch_writer(monkeypatch) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    monkeypatch.setattr("mokioclaw.graph.nodes._get_writer", lambda: events.append)
+    monkeypatch.setattr("congclaw.graph.nodes._get_writer", lambda: events.append)
     return events
 
 
@@ -93,11 +93,11 @@ def _stub_rag_empty_path(monkeypatch) -> None:
         async def ainvoke(self, messages, **kwargs):
             return AIMessage(content="规范的检索问句")
 
-    monkeypatch.setattr("mokioclaw.rag.nodes.bm25_search", empty_search)
-    monkeypatch.setattr("mokioclaw.rag.nodes.dense_search", empty_search)
-    monkeypatch.setattr("mokioclaw.rag.nodes.rerank_hits", empty_rerank)
-    monkeypatch.setattr("mokioclaw.rag.nodes.build_parent_evidence", empty_parents)
-    monkeypatch.setattr("mokioclaw.rag.nodes.create_model", lambda: FakeRagModel())
+    monkeypatch.setattr("congclaw.rag.nodes.bm25_search", empty_search)
+    monkeypatch.setattr("congclaw.rag.nodes.dense_search", empty_search)
+    monkeypatch.setattr("congclaw.rag.nodes.rerank_hits", empty_rerank)
+    monkeypatch.setattr("congclaw.rag.nodes.build_parent_evidence", empty_parents)
+    monkeypatch.setattr("congclaw.rag.nodes.create_model", lambda: FakeRagModel())
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ def test_rewrite_first_turn_passthrough_without_model_call(monkeypatch) -> None:
     def _unexpected_model():
         raise AssertionError("首轮无窗口不应调用重写模型")
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", _unexpected_model)
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", _unexpected_model)
 
     update = _run(query_rewrite_node({"task": "查一下5G畅享套餐", "messages": []}))
 
@@ -130,7 +130,7 @@ def test_rewrite_empty_input_passthrough(monkeypatch) -> None:
     def _unexpected_model():
         raise AssertionError("空输入不应调用重写模型")
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", _unexpected_model)
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", _unexpected_model)
 
     state = {
         "task": "   ",
@@ -148,7 +148,7 @@ def test_rewrite_no_coreference_passthrough(monkeypatch) -> None:
     events = _patch_writer(monkeypatch)
     original = "5G畅享199元档套餐的月费是多少"
     monkeypatch.setattr(
-        "mokioclaw.graph.nodes.create_model",
+        "congclaw.graph.nodes.create_model",
         lambda: _StaticModel(_rewrite_json(changed=False, rewritten=original, reason="问句自包含")),
     )
 
@@ -173,7 +173,7 @@ def test_rewrite_resolves_coreference_with_window(monkeypatch) -> None:
     events = _patch_writer(monkeypatch)
     rewritten = "5G畅享199元档套餐月费多少钱"
     monkeypatch.setattr(
-        "mokioclaw.graph.nodes.create_model",
+        "congclaw.graph.nodes.create_model",
         lambda: _StaticModel(_rewrite_json(changed=True, rewritten=rewritten, reason="指代上文套餐")),
     )
 
@@ -208,7 +208,7 @@ def test_rewrite_model_exception_passthrough(monkeypatch) -> None:
         async def ainvoke(self, messages, **kwargs):
             raise RuntimeError("llm unavailable")
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: BoomModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: BoomModel())
 
     state = {
         "task": "那这个怎么办",
@@ -226,7 +226,7 @@ def test_rewrite_invalid_json_passthrough(monkeypatch) -> None:
     """模型返回无法解析的 JSON 片段时原样透传。"""
     events = _patch_writer(monkeypatch)
     monkeypatch.setattr(
-        "mokioclaw.graph.nodes.create_model",
+        "congclaw.graph.nodes.create_model",
         lambda: _StaticModel(AIMessage(content='{"changed": true, "rewritten":')),
     )
 
@@ -655,9 +655,9 @@ def _event(events: list[dict[str, Any]], event_type: str) -> dict[str, Any]:
 def test_coreference_script_rewrite_then_route_agent_with_package_slot(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _ScriptedEntryModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _ScriptedEntryModel())
     _stub_rag_empty_path(monkeypatch)
-    monkeypatch.setattr("mokioclaw.agent.nodes.create_model", lambda: _ScriptedAgentModel())
+    monkeypatch.setattr("congclaw.agent.nodes.create_model", lambda: _ScriptedAgentModel())
 
     state: dict[str, Any] = {
         "task": "查一下5G畅享129元档套餐",
@@ -741,7 +741,7 @@ def _custom_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def test_cross_session_profile_loaded_into_memory(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _RagIntentModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _RagIntentModel())
     _stub_rag_empty_path(monkeypatch)
 
     def _no_llm():

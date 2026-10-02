@@ -7,7 +7,7 @@ import aiosqlite
 import pytest
 from sqlalchemy import text
 
-from mokioclaw.db import dispose_engine, init_db, resolve_db_path, session_scope
+from congclaw.db import dispose_engine, init_db, resolve_db_path, session_scope
 
 
 @pytest.fixture

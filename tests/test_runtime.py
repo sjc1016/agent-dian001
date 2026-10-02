@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mokioclaw.core.agent import create_runtime
-from mokioclaw.core.paths import new_task_workspace
+from congclaw.core.agent import create_runtime
+from congclaw.core.paths import new_task_workspace
 
 
 def test_new_task_workspace_is_unique(tmp_path: Path) -> None:
@@ -11,12 +11,12 @@ def test_new_task_workspace_is_unique(tmp_path: Path) -> None:
     second = new_task_workspace(tmp_path)
 
     assert first != second
-    assert first.parent == tmp_path / ".mokioclaw" / "workspaces"
+    assert first.parent == tmp_path / ".congclaw" / "workspaces"
     assert first.name.startswith("workspace-")
 
 
 def test_create_runtime_uses_fresh_default_workspace(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("mokioclaw.core.paths.find_project_root", lambda start=None: tmp_path)
+    monkeypatch.setattr("congclaw.core.paths.find_project_root", lambda start=None: tmp_path)
 
     first = create_runtime()
     second = create_runtime()
@@ -46,10 +46,10 @@ def test_create_runtime_sets_approval_configuration(tmp_path: Path) -> None:
 
 def test_create_runtime_reads_bash_harness_env(monkeypatch, tmp_path: Path) -> None:
     env_file = tmp_path / "agent.env"
-    monkeypatch.setenv("MOKIO_BASH_DEFAULT_TIMEOUT_SECONDS", "45")
-    monkeypatch.setenv("MOKIO_BASH_MAX_TIMEOUT_SECONDS", "300")
-    monkeypatch.setenv("MOKIO_BASH_MAX_OUTPUT_CHARS", "1234")
-    monkeypatch.setenv("MOKIO_BASH_ENV_FILE", str(env_file))
+    monkeypatch.setenv("CONG_BASH_DEFAULT_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("CONG_BASH_MAX_TIMEOUT_SECONDS", "300")
+    monkeypatch.setenv("CONG_BASH_MAX_OUTPUT_CHARS", "1234")
+    monkeypatch.setenv("CONG_BASH_ENV_FILE", str(env_file))
 
     runtime = create_runtime(tmp_path / "workspace")
 
@@ -69,7 +69,7 @@ def test_create_runtime_sets_checkpoint_configuration(tmp_path: Path) -> None:
 
 
 def test_create_runtime_reads_checkpoint_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("MOKIO_CHECKPOINT_MODE", "deny-this-invalid-mode")
+    monkeypatch.setenv("CONG_CHECKPOINT_MODE", "deny-this-invalid-mode")
 
     runtime = create_runtime(tmp_path / "workspace", checkpoint_mode=None)
 
@@ -83,7 +83,7 @@ def test_create_runtime_sets_trace_configuration(tmp_path: Path) -> None:
 
 
 def test_create_runtime_reads_trace_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("MOKIO_TRACE_MODE", "off")
+    monkeypatch.setenv("CONG_TRACE_MODE", "off")
 
     runtime = create_runtime(tmp_path / "workspace", trace_mode=None)
 
@@ -91,7 +91,7 @@ def test_create_runtime_reads_trace_env(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_stream_agent_events_routes_model_chat_without_workspace(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
+    from congclaw.core.agent import stream_agent_events
 
     class FakeEntryWorkflow:
         def _events(self):
@@ -116,17 +116,17 @@ def test_stream_agent_events_routes_model_chat_without_workspace(monkeypatch, tm
     def fail_complex_workflow():
         raise AssertionError("complex workflow should not be built for chat route")
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: FakeEntryWorkflow())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", fail_complex_workflow)
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: FakeEntryWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", fail_complex_workflow)
 
     events = list(stream_agent_events("你好", workspace=tmp_path, approval_mode="deny"))
 
     assert [event["event"]["type"] for event in events if event.get("type") == "custom_event"] == ["intent_decision", "chat_response"]
-    assert not (tmp_path / ".mokioclaw").exists()
+    assert not (tmp_path / ".congclaw").exists()
 
 
 def test_stream_agent_events_routes_model_workflow_to_complex_graph(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
+    from congclaw.core.agent import stream_agent_events
 
     class FakeEntryWorkflow:
         def _events(self):
@@ -148,8 +148,8 @@ def test_stream_agent_events_routes_model_workflow_to_complex_graph(monkeypatch,
         def stream(self, inputs, stream_mode):
             yield ("updates", {"final": {"final_answer": "PASSED"}})
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: FakeEntryWorkflow())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: FakeEntryWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     events = list(stream_agent_events("帮我创建一个 HTML 页面", workspace=tmp_path, checkpoint_mode="off", trace_mode="off", approval_mode="deny"))
 
@@ -158,15 +158,15 @@ def test_stream_agent_events_routes_model_workflow_to_complex_graph(monkeypatch,
 
 
 def test_stream_agent_events_saves_checkpoint_on_keyboard_interrupt(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
+    from congclaw.core.agent import stream_agent_events
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
             yield ("updates", {"planner": {"plan_summary": "plan", "messages": []}})
             raise KeyboardInterrupt
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     events = list(
         stream_agent_events(
@@ -178,12 +178,12 @@ def test_stream_agent_events_saves_checkpoint_on_keyboard_interrupt(monkeypatch,
     )
 
     assert any(event.get("type") == "custom_event" and event["event"].get("type") == "checkpoint_saved" for event in events)
-    assert (tmp_path / ".mokioclaw" / "checkpoints" / "RECOVERY.md").exists()
-    assert "plan" in (tmp_path / ".mokioclaw" / "checkpoints" / "RECOVERY.md").read_text(encoding="utf-8")
+    assert (tmp_path / ".congclaw" / "checkpoints" / "RECOVERY.md").exists()
+    assert "plan" in (tmp_path / ".congclaw" / "checkpoints" / "RECOVERY.md").read_text(encoding="utf-8")
 
 
 def test_stream_agent_events_writes_trace_summary_on_finish(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
+    from congclaw.core.agent import stream_agent_events
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
@@ -191,8 +191,8 @@ def test_stream_agent_events_writes_trace_summary_on_finish(monkeypatch, tmp_pat
             yield ("custom", {"type": "tool_result", "node": "codeAgent", "name": "BashTool", "result": {"ok": True}})
             yield ("updates", {"final": {"final_answer": "LangGraph MultiAgent workflow finished: PASSED"}})
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     events = list(
         stream_agent_events(
@@ -208,11 +208,11 @@ def test_stream_agent_events_writes_trace_summary_on_finish(monkeypatch, tmp_pat
     assert trace_events
     assert trace_events[-1]["status"] == "finished"
     assert trace_events[-1]["tool_calls"] == 1
-    assert (tmp_path / ".mokioclaw" / "traces").exists()
+    assert (tmp_path / ".congclaw" / "traces").exists()
 
 
 def test_stream_agent_events_checkpoints_only_at_safety_points(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
+    from congclaw.core.agent import stream_agent_events
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
@@ -230,8 +230,8 @@ def test_stream_agent_events_checkpoints_only_at_safety_points(monkeypatch, tmp_
             )
             yield ("updates", {"final": {"final_answer": "LangGraph MultiAgent workflow finished: PASSED"}})
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     events = list(
         stream_agent_events(
@@ -250,15 +250,15 @@ def test_stream_agent_events_checkpoints_only_at_safety_points(monkeypatch, tmp_
 
 
 def test_stream_agent_events_writes_trace_summary_on_keyboard_interrupt(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
+    from congclaw.core.agent import stream_agent_events
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
             yield ("updates", {"planner": {"plan_summary": "plan", "messages": []}})
             raise KeyboardInterrupt
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     events = list(
         stream_agent_events(
@@ -277,14 +277,14 @@ def test_stream_agent_events_writes_trace_summary_on_keyboard_interrupt(monkeypa
 
 
 def test_stream_agent_events_trace_off_creates_no_trace_dir(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
+    from congclaw.core.agent import stream_agent_events
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
             yield ("updates", {"final": {"final_answer": "PASSED"}})
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: _WorkflowEntry())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     events = list(
         stream_agent_events(
@@ -297,13 +297,13 @@ def test_stream_agent_events_trace_off_creates_no_trace_dir(monkeypatch, tmp_pat
     )
 
     assert not any(event.get("type") == "custom_event" and event["event"].get("type") == "trace_summary" for event in events)
-    assert not (tmp_path / ".mokioclaw" / "traces").exists()
+    assert not (tmp_path / ".congclaw" / "traces").exists()
 
 
 def test_stream_agent_events_trace_records_resume(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
-    from mokioclaw.core.checkpoint import CheckpointManager
-    from mokioclaw.core.state import RuntimeState
+    from congclaw.core.agent import stream_agent_events
+    from congclaw.core.checkpoint import CheckpointManager
+    from congclaw.core.state import RuntimeState
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
@@ -315,7 +315,7 @@ def test_stream_agent_events_trace_records_resume(monkeypatch, tmp_path: Path) -
         status="interrupted",
         latest_node="planner",
     )
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     list(
         stream_agent_events(
@@ -327,16 +327,16 @@ def test_stream_agent_events_trace_records_resume(monkeypatch, tmp_path: Path) -
         )
     )
 
-    events_files = list((tmp_path / ".mokioclaw" / "traces").glob("trace-*/events.jsonl"))
+    events_files = list((tmp_path / ".congclaw" / "traces").glob("trace-*/events.jsonl"))
     assert events_files
     content = events_files[0].read_text(encoding="utf-8")
     assert "checkpoint_resumed" in content
 
 
 def test_stream_agent_events_resume_skips_entry_router(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_agent_events
-    from mokioclaw.core.checkpoint import CheckpointManager
-    from mokioclaw.core.state import RuntimeState
+    from congclaw.core.agent import stream_agent_events
+    from congclaw.core.checkpoint import CheckpointManager
+    from congclaw.core.state import RuntimeState
 
     class FakeWorkflow:
         def stream(self, inputs, stream_mode):
@@ -352,8 +352,8 @@ def test_stream_agent_events_resume_skips_entry_router(monkeypatch, tmp_path: Pa
     def fail_entry_workflow():
         raise AssertionError("resume should skip entry router")
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", fail_entry_workflow)
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", fail_entry_workflow)
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     events = list(stream_agent_events(workspace=tmp_path, resume_workspace=tmp_path, checkpoint_mode="off", trace_mode="off", approval_mode="deny"))
 
@@ -361,9 +361,9 @@ def test_stream_agent_events_resume_skips_entry_router(monkeypatch, tmp_path: Pa
 
 
 def test_stream_session_events_chat_writes_session_without_harness(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_session_events
-    from mokioclaw.core.session import load_or_create_session
-    from mokioclaw.db import dispose_engine
+    from congclaw.core.agent import stream_session_events
+    from congclaw.core.session import load_or_create_session
+    from congclaw.db import dispose_engine
     import asyncio
 
     monkeypatch.setenv("DB_PATH", str(tmp_path / "telecom_cs.db"))
@@ -390,17 +390,17 @@ def test_stream_session_events_chat_writes_session_without_harness(monkeypatch, 
     def fail_complex_workflow():
         raise AssertionError("complex workflow should not run for chat route")
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: FakeEntryWorkflow())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", fail_complex_workflow)
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: FakeEntryWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", fail_complex_workflow)
 
     events = list(stream_session_events("你好", session_workspace=tmp_path, checkpoint_mode="light", trace_mode="on", approval_mode="deny"))
 
     custom_types = [event["event"]["type"] for event in events if event.get("type") == "custom_event"]
     assert "session_started" in custom_types
     assert "session_turn_saved" in custom_types
-    assert not (tmp_path / ".mokioclaw" / "checkpoints").exists()
+    assert not (tmp_path / ".congclaw" / "checkpoints").exists()
     # 阶段 6 起原生 async 路径也写 trace（trace_mode="on"）
-    assert (tmp_path / ".mokioclaw" / "traces").exists()
+    assert (tmp_path / ".congclaw" / "traces").exists()
     # 会话状态已持久化到 SQLite（不再写 session.json）
     reloaded = load_or_create_session(tmp_path)
     assert reloaded["turn_index"] == 1
@@ -410,9 +410,9 @@ def test_stream_session_events_chat_writes_session_without_harness(monkeypatch, 
 
 
 def test_stream_session_events_workflow_reuses_workspace_and_session_context(monkeypatch, tmp_path: Path) -> None:
-    from mokioclaw.core.agent import stream_session_events
-    from mokioclaw.core.session import load_or_create_session
-    from mokioclaw.db import dispose_engine
+    from congclaw.core.agent import stream_session_events
+    from congclaw.core.session import load_or_create_session
+    from congclaw.db import dispose_engine
     import asyncio
 
     monkeypatch.setenv("DB_PATH", str(tmp_path / "telecom_cs.db"))
@@ -441,8 +441,8 @@ def test_stream_session_events_workflow_reuses_workspace_and_session_context(mon
             captured["session_turn"] = inputs.get("session_turn")
             yield ("updates", {"final": {"final_answer": "PASSED: done"}})
 
-    monkeypatch.setattr("mokioclaw.core.agent.build_entry_workflow", lambda: FakeEntryWorkflow())
-    monkeypatch.setattr("mokioclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_entry_workflow", lambda: FakeEntryWorkflow())
+    monkeypatch.setattr("congclaw.core.agent.build_complex_workflow", lambda: FakeWorkflow())
 
     events = list(
         stream_session_events(

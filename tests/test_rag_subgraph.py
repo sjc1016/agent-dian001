@@ -1,6 +1,6 @@
 """阶段 3 验收：RAG LangGraph 子图。
 
-所有外部依赖（BM25 / Milvus / CrossEncoder / LLM）均在 ``mokioclaw.rag.nodes``
+所有外部依赖（BM25 / Milvus / CrossEncoder / LLM）均在 ``congclaw.rag.nodes``
 命名空间打桩，测试只验证图拓扑、融合/门控/回退逻辑与事件序列，不加载本地模型。
 """
 
@@ -13,12 +13,12 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage
 
-from mokioclaw.db import init_db
-from mokioclaw.graph.workflow import build_entry_workflow
-from mokioclaw.prompts.rag import RAG_FALLBACK_REPLY
-from mokioclaw.rag import nodes as rag_nodes
-from mokioclaw.rag.store import ChunkRow, fetch_parent_groups, replace_doc_chunks
-from mokioclaw.rag.workflow import build_rag_subgraph
+from congclaw.db import init_db
+from congclaw.graph.workflow import build_entry_workflow
+from congclaw.prompts.rag import RAG_FALLBACK_REPLY
+from congclaw.rag import nodes as rag_nodes
+from congclaw.rag.store import ChunkRow, fetch_parent_groups, replace_doc_chunks
+from congclaw.rag.workflow import build_rag_subgraph
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +464,7 @@ def test_main_graph_rag_query_routes_into_rag_subgraph(monkeypatch, tmp_path) ->
         async def ainvoke(self, messages, **kwargs):
             return AIMessage(content=payload)
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeIntentModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeIntentModel())
 
     async def run() -> tuple[dict[str, Any], list[str]]:
         updates: dict[str, Any] = {}

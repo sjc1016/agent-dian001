@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from mokioclaw.eval.collector import SessionTrace, collect_from_events, collect_from_trace_dir
-from mokioclaw.eval.llm_judge import JudgeScores, _fallback_scores, judge_answer
-from mokioclaw.eval.normalizer import EvalSample, normalize
-from mokioclaw.eval.report import EvalReport, SampleEvalResult, render_markdown, write_report
-from mokioclaw.eval.rule_checks import run_rule_checks
+from congclaw.eval.collector import SessionTrace, collect_from_events, collect_from_trace_dir
+from congclaw.eval.llm_judge import JudgeScores, _fallback_scores, judge_answer
+from congclaw.eval.normalizer import EvalSample, normalize
+from congclaw.eval.report import EvalReport, SampleEvalResult, render_markdown, write_report
+from congclaw.eval.rule_checks import run_rule_checks
 
 
 def _make_events() -> list[dict]:
@@ -306,7 +306,7 @@ def test_judge_answer_fallback_when_llm_unavailable(monkeypatch) -> None:
     def _boom(*args, **kwargs):
         raise RuntimeError("no api key")
 
-    monkeypatch.setattr("mokioclaw.providers.openai_provider.create_model", _boom)
+    monkeypatch.setattr("congclaw.providers.openai_provider.create_model", _boom)
 
     scores = asyncio.run(judge_answer(sample))
     assert scores.fallback is True
@@ -405,10 +405,10 @@ def test_runner_single_sample_with_stubbed_model(tmp_path: Path, monkeypatch) ->
         async def ainvoke(self, messages, **kwargs):
             return AIMessage(content=intent_payload)
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeIntentModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeIntentModel())
 
     # Agent 思考 → 调 query_balance → 反思 pass → 答复
-    from mokioclaw.prompts.agent import AGENT_REFLECT_PROMPT, AGENT_RESPOND_PROMPT
+    from congclaw.prompts.agent import AGENT_REFLECT_PROMPT, AGENT_RESPOND_PROMPT
 
     class FakeAgentModel:
         def bind_tools(self, tools):
@@ -427,12 +427,12 @@ def test_runner_single_sample_with_stubbed_model(tmp_path: Path, monkeypatch) ->
                 tool_calls=[{"id": "c1", "name": "query_balance", "args": {}}],
             )
 
-    monkeypatch.setattr("mokioclaw.agent.nodes.create_model", lambda: FakeAgentModel())
+    monkeypatch.setattr("congclaw.agent.nodes.create_model", lambda: FakeAgentModel())
     # LLM-Judge 用退化路径（无 API key）
     monkeypatch.setenv("API_KEY", "")
 
-    from mokioclaw.db import dispose_engine
-    from mokioclaw.eval.runner import run_single_sample
+    from congclaw.db import dispose_engine
+    from congclaw.eval.runner import run_single_sample
 
     ws = tmp_path / "ws-e01"
     try:

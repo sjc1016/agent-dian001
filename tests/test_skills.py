@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from mokioclaw.skills.base import SkillContext, SkillError
-from mokioclaw.skills.catalog.change_package import SKILL as change_package_skill
-from mokioclaw.skills.catalog.list_packages import SKILL as list_packages_skill
-from mokioclaw.skills.catalog.query_balance import SKILL as query_balance_skill
-from mokioclaw.skills.catalog.query_fault_status import SKILL as query_fault_status_skill
-from mokioclaw.skills.catalog.report_fault import SKILL as report_fault_skill
+from congclaw.skills.base import SkillContext, SkillError
+from congclaw.skills.catalog.change_package import SKILL as change_package_skill
+from congclaw.skills.catalog.list_packages import SKILL as list_packages_skill
+from congclaw.skills.catalog.query_balance import SKILL as query_balance_skill
+from congclaw.skills.catalog.query_fault_status import SKILL as query_fault_status_skill
+from congclaw.skills.catalog.report_fault import SKILL as report_fault_skill
 
 
 @pytest.fixture(autouse=True)

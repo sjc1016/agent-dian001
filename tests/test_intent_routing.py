@@ -10,10 +10,10 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage
 
-from mokioclaw.core.agent import stream_session_events
-from mokioclaw.core.session import load_or_create_session
-from mokioclaw.db.engine import dispose_engine
-from mokioclaw.graph.workflow import build_entry_workflow
+from congclaw.core.agent import stream_session_events
+from congclaw.core.session import load_or_create_session
+from congclaw.db.engine import dispose_engine
+from congclaw.graph.workflow import build_entry_workflow
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +69,7 @@ def _stub_agent_direct_reply(monkeypatch, reply: str = "好的，已记录您的
         async def ainvoke(self, messages, **kwargs):
             return AIMessage(content=reply)
 
-    monkeypatch.setattr("mokioclaw.agent.nodes.create_model", lambda: FakeAgentModel())
+    monkeypatch.setattr("congclaw.agent.nodes.create_model", lambda: FakeAgentModel())
 
 
 def _stub_rag_empty_path(monkeypatch) -> None:
@@ -91,11 +91,11 @@ def _stub_rag_empty_path(monkeypatch) -> None:
         async def ainvoke(self, messages, **kwargs):
             return AIMessage(content="规范的检索问句")
 
-    monkeypatch.setattr("mokioclaw.rag.nodes.bm25_search", empty_search)
-    monkeypatch.setattr("mokioclaw.rag.nodes.dense_search", empty_search)
-    monkeypatch.setattr("mokioclaw.rag.nodes.rerank_hits", empty_rerank)
-    monkeypatch.setattr("mokioclaw.rag.nodes.build_parent_evidence", empty_parents)
-    monkeypatch.setattr("mokioclaw.rag.nodes.create_model", lambda: FakeRagModel())
+    monkeypatch.setattr("congclaw.rag.nodes.bm25_search", empty_search)
+    monkeypatch.setattr("congclaw.rag.nodes.dense_search", empty_search)
+    monkeypatch.setattr("congclaw.rag.nodes.rerank_hits", empty_rerank)
+    monkeypatch.setattr("congclaw.rag.nodes.build_parent_evidence", empty_parents)
+    monkeypatch.setattr("congclaw.rag.nodes.create_model", lambda: FakeRagModel())
 
 
 # P2-10：10 条意图测试输入，五类各覆盖（含模糊与无关）
@@ -115,7 +115,7 @@ def _stub_rag_empty_path(monkeypatch) -> None:
     ],
 )
 def test_ten_intent_inputs_route_correctly(monkeypatch, task: str, category: str, route: str) -> None:
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model(category))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model(category))
     if route == "rag_answer":
         _stub_rag_empty_path(monkeypatch)
     if route == "agent_loop":
@@ -131,7 +131,7 @@ def test_ten_intent_inputs_route_correctly(monkeypatch, task: str, category: str
 
 def test_fuzzy_input_falls_back_after_fifth_clarify_round(monkeypatch) -> None:
     """验收门：模糊输入连续追问第 5 轮后自动兜底。"""
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model("clarify", confidence=0.7))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model("clarify", confidence=0.7))
 
     graph = build_entry_workflow()
     state: dict[str, Any] = {"task": "帮我办一下那个", "clarify_count": 0, "unknown_count": 0}
@@ -152,7 +152,7 @@ def test_fuzzy_input_falls_back_after_fifth_clarify_round(monkeypatch) -> None:
 
 def test_irrelevant_request_falls_back_immediately(monkeypatch) -> None:
     """验收门：无关请求（如写诗）不追问、不进业务分支，直接兜底。"""
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model("irrelevant", confidence=0.95))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model("irrelevant", confidence=0.95))
 
     updates = _stream_updates({"task": "帮我写一首诗"})
 
@@ -166,7 +166,7 @@ def test_irrelevant_request_falls_back_immediately(monkeypatch) -> None:
 
 def test_unknown_streak_falls_back_on_second_consecutive_round(monkeypatch) -> None:
     """连续 unknown 达到阈值（2）后强制兜底。"""
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model("unknown", confidence=0.2))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model("unknown", confidence=0.2))
 
     graph = build_entry_workflow()
     state: dict[str, Any] = {"task": "？？"}
@@ -185,7 +185,7 @@ def test_unknown_streak_falls_back_on_second_consecutive_round(monkeypatch) -> N
 
 def test_clear_intent_resets_counts_across_turns(monkeypatch) -> None:
     """明确业务后追问/unknown 计数清零（连续语义）。"""
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model("clarify", confidence=0.7))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model("clarify", confidence=0.7))
 
     graph = build_entry_workflow()
     state: dict[str, Any] = {"task": "帮我办一下那个", "clarify_count": 3, "unknown_count": 1}
@@ -193,7 +193,7 @@ def test_clear_intent_resets_counts_across_turns(monkeypatch) -> None:
     assert updates["intent_router"]["intent_route"] == "clarify"
     assert updates["clarify"]["clarify_count"] == 4
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model("rag_query"))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model("rag_query"))
     _stub_rag_empty_path(monkeypatch)
     updates = _stream_updates({**state, **updates["clarify"], "task": "话费怎么查"}, graph)
     assert updates["intent_router"]["intent_route"] == "rag_answer"
@@ -204,7 +204,7 @@ def test_clear_intent_resets_counts_across_turns(monkeypatch) -> None:
 def test_session_counts_persist_across_turns(monkeypatch, tmp_path: Path) -> None:
     """追问计数写入会话存储，重启后（重新 load）继续累计并可在明确业务时清零。"""
     workspace = tmp_path / "ws"
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model("clarify", confidence=0.7))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model("clarify", confidence=0.7))
     monkeypatch.setenv("DB_PATH", str(tmp_path / "cs.db"))
 
     events_1 = list(stream_session_events("帮我办一下那个", session_workspace=workspace))
@@ -219,14 +219,14 @@ def test_session_counts_persist_across_turns(monkeypatch, tmp_path: Path) -> Non
 
     # 模拟进程重启：释放引擎后重新走一轮，计数应延续
     asyncio.run(dispose_engine())
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model("clarify", confidence=0.7))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model("clarify", confidence=0.7))
     list(stream_session_events("还是那个事", session_workspace=workspace))
     session = load_or_create_session(workspace)
     assert session["clarify_count"] == 2
 
     # 明确业务后计数清零
     asyncio.run(dispose_engine())
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: _fake_model("rag_query"))
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: _fake_model("rag_query"))
     _stub_rag_empty_path(monkeypatch)
     list(stream_session_events("话费怎么查", session_workspace=workspace))
     session = load_or_create_session(workspace)

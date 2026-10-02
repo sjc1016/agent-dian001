@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mokioclaw.core.state import RuntimeState
-from mokioclaw.tools.registry import build_read_only_tools, build_tools
-from mokioclaw.tools.todo_tool import persist_todos, render_todo_markdown, update_todo, write_todos
+from congclaw.core.state import RuntimeState
+from congclaw.tools.registry import build_read_only_tools, build_tools
+from congclaw.tools.todo_tool import persist_todos, render_todo_markdown, update_todo, write_todos
 
 
 def make_state(tmp_path: Path) -> RuntimeState:

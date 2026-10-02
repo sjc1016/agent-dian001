@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mokioclaw.cli.formatter import (
+from congclaw.cli.formatter import (
     render_checkpoint_resumed,
     render_checkpoint_saved,
     render_context_compression,
@@ -88,7 +88,7 @@ def test_render_chat_response(capsys) -> None:
     )
 
     output = capsys.readouterr().out
-    assert "MokioClaw" in output
+    assert "CongClaw" in output
     assert "你好" in output
 
 
@@ -125,7 +125,7 @@ def test_render_session_event(capsys) -> None:
 
 
 def test_print_custom_event_handles_session_saved(capsys) -> None:
-    from mokioclaw.cli.formatter import print_custom_event
+    from congclaw.cli.formatter import print_custom_event
 
     print_custom_event(
         {
@@ -162,7 +162,7 @@ def test_render_context_compression(capsys) -> None:
 
 
 def test_tool_result_formats_notepad_content(capsys) -> None:
-    from mokioclaw.cli.formatter import print_custom_event
+    from congclaw.cli.formatter import print_custom_event
 
     print_custom_event(
         {
@@ -203,7 +203,7 @@ def test_render_memory_snapshot(capsys) -> None:
 
 
 def test_print_custom_event_handles_memory_snapshot(capsys) -> None:
-    from mokioclaw.cli.formatter import print_custom_event
+    from congclaw.cli.formatter import print_custom_event
 
     print_custom_event(
         {
@@ -234,17 +234,17 @@ def test_render_checkpoint_saved(capsys) -> None:
         {
             "mode": "light",
             "status": "interrupted",
-            "path": ".mokioclaw/checkpoints",
+            "path": ".congclaw/checkpoints",
             "checkpoint_file": "checkpoint.json",
             "recovery_file": "RECOVERY.md",
             "git_commit": "abc123",
-            "resume_command": "uv run mokioclaw --resume ws",
+            "resume_command": "uv run congclaw --resume ws",
         }
     )
 
     output = capsys.readouterr().out
     assert "Checkpoint Saved" in output
-    assert "uv run mokioclaw --resume ws" in output
+    assert "uv run congclaw --resume ws" in output
 
 
 def test_render_checkpoint_resumed(capsys) -> None:
@@ -263,15 +263,15 @@ def test_render_checkpoint_resumed(capsys) -> None:
 
 
 def test_print_custom_event_handles_checkpoint_saved(capsys) -> None:
-    from mokioclaw.cli.formatter import print_custom_event
+    from congclaw.cli.formatter import print_custom_event
 
     print_custom_event(
         {
             "type": "checkpoint_saved",
             "mode": "light",
             "status": "finished",
-            "path": ".mokioclaw/checkpoints",
-            "resume_command": "uv run mokioclaw --resume ws",
+            "path": ".congclaw/checkpoints",
+            "resume_command": "uv run congclaw --resume ws",
         }
     )
 
@@ -285,7 +285,7 @@ def test_render_trace_summary(capsys) -> None:
             "trace_id": "trace-demo",
             "status": "finished",
             "duration_ms": 123,
-            "trace_dir": ".mokioclaw/traces/trace-demo",
+            "trace_dir": ".congclaw/traces/trace-demo",
             "node_visits": {"planner": 1, "final": 1},
             "tool_calls": 2,
             "failed_tool_calls": 1,
@@ -302,7 +302,7 @@ def test_render_trace_summary(capsys) -> None:
 
 
 def test_print_custom_event_handles_trace_summary(capsys) -> None:
-    from mokioclaw.cli.formatter import print_custom_event
+    from congclaw.cli.formatter import print_custom_event
 
     print_custom_event(
         {
@@ -310,7 +310,7 @@ def test_print_custom_event_handles_trace_summary(capsys) -> None:
             "trace_id": "trace-demo",
             "status": "interrupted",
             "duration_ms": 10,
-            "trace_dir": ".mokioclaw/traces/trace-demo",
+            "trace_dir": ".congclaw/traces/trace-demo",
             "node_visits": {},
             "tool_calls": 0,
             "failed_tool_calls": 0,

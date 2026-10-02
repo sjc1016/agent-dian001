@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from mokioclaw.core.session import (
+from congclaw.core.session import (
     append_assistant_turn,
     append_user_turn,
     build_session_context,
@@ -12,7 +12,7 @@ from mokioclaw.core.session import (
     save_session,
     session_summary_file,
 )
-from mokioclaw.db import dispose_engine
+from congclaw.db import dispose_engine
 
 
 @pytest.fixture(autouse=True)

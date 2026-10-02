@@ -220,7 +220,7 @@ def check_hotplug() -> None:
 
     skill_name = f"acc_hot_{uuid.uuid4().hex[:6]}"
     skill_code = (
-        "from mokioclaw.skills.base import Skill, SkillContext\n\n"
+        "from congclaw.skills.base import Skill, SkillContext\n\n"
         "class AccHot(Skill):\n"
         f"    name = \"{skill_name}\"\n"
         "    description = \"验收热插拔测试 Skill：返回固定字符串\"\n"

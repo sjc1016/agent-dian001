@@ -1228,7 +1228,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mokioclaw"
+name = "congclaw"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

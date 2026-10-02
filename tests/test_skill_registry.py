@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from mokioclaw.skills.base import SkillContext
-from mokioclaw.skills.registry import SkillRegistry
+from congclaw.skills.base import SkillContext
+from congclaw.skills.registry import SkillRegistry
 
 _ECHO_SKILL_SOURCE = '''
-from mokioclaw.skills.base import Skill, SkillParameter
+from congclaw.skills.base import Skill, SkillParameter
 
 
 class EchoSkill(Skill):

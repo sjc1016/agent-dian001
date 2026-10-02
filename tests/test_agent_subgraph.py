@@ -4,7 +4,7 @@
 ①查余额单工具链路；②宽带报修多工具并行链路；③套餐变更人工确认卡片两回合；
 另覆盖反思重试上限兜底、deny 审批策略、取消确认单、custom 轨迹事件。
 
-LLM 全部打桩（mokioclaw.agent.nodes.create_model），业务 Skill 与 SQLite 仓储
+LLM 全部打桩（congclaw.agent.nodes.create_model），业务 Skill 与 SQLite 仓储
 使用真实实现（独立 tmp 库 + 真实内置 catalog 注册中心）。
 """
 
@@ -18,17 +18,17 @@ import aiosqlite
 import pytest
 from langchain_core.messages import AIMessage
 
-from mokioclaw.agent.nodes import detect_approval_resolution
-from mokioclaw.agent.workflow import build_agent_subgraph
-from mokioclaw.db.engine import resolve_db_path
-from mokioclaw.prompts.agent import (
+from congclaw.agent.nodes import detect_approval_resolution
+from congclaw.agent.workflow import build_agent_subgraph
+from congclaw.db.engine import resolve_db_path
+from congclaw.prompts.agent import (
     AGENT_FALLBACK_REPLY,
     AGENT_REFLECT_PROMPT,
     AGENT_RESPOND_PROMPT,
     APPROVAL_CANCELLED_REPLY,
 )
-from mokioclaw.skills.business_store import get_pending_approval, save_pending_approval
-from mokioclaw.skills.registry import BUILTIN_CATALOG_DIR, SkillRegistry
+from congclaw.skills.business_store import get_pending_approval, save_pending_approval
+from congclaw.skills.registry import BUILTIN_CATALOG_DIR, SkillRegistry
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +101,7 @@ def _base_state(_env, **overrides):
 
 
 def _stub_model(monkeypatch, model: FakeAgentModel) -> None:
-    monkeypatch.setattr("mokioclaw.agent.nodes.create_model", lambda: model)
+    monkeypatch.setattr("congclaw.agent.nodes.create_model", lambda: model)
 
 
 # ---------------------------------------------------------------------------

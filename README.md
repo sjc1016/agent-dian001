@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./logo.png" alt="MokioClaw Logo" width="460" />
+  <img src="./logo.png" alt="CongClaw Logo" width="460" />
 </p>
 
-<h1 align="center">电信客服智能体（基于 MokioClaw 改造）</h1>
+<h1 align="center">电信客服智能体（基于 CongClaw 改造）</h1>
 
 <p align="center">
   FastAPI + LangGraph 双引擎客服 Agent：RAG 快速检索保响应速度，Agent 深度推理保复杂业务处理能力。
@@ -10,7 +10,7 @@
 
 ## 项目简介
 
-本项目在教学向 Mini CodeAgent **MokioClaw** 的骨架上（LangGraph 编排、意图路由、分层记忆、工具注册、反思校验、链路观测），按"保留骨架、替换血肉"的思路改造为**电信客服业务智能体**，面向四类高频场景的多轮对话：
+本项目在教学向 Mini CodeAgent **CongClaw** 的骨架上（LangGraph 编排、意图路由、分层记忆、工具注册、反思校验、链路观测），按"保留骨架、替换血肉"的思路改造为**电信客服业务智能体**，面向四类高频场景的多轮对话：
 
 | 业务场景 | 示例 | 承接引擎 |
 | --- | --- | --- |
@@ -116,15 +116,15 @@ SKILL_WATCH_INTERVAL=2
 ### 3. 初始化知识库
 
 ```bash
-uv run python -m mokioclaw.db           # 幂等建库 data/telecom_cs.db
-uv run python -m mokioclaw.rag          # 入库 knowledge/ 全部文档（8 份，80 child 分片）
-uv run python -m mokioclaw.rag --stats  # 查看知识库规模
+uv run python -m congclaw.db           # 幂等建库 data/telecom_cs.db
+uv run python -m congclaw.rag          # 入库 knowledge/ 全部文档（8 份，80 child 分片）
+uv run python -m congclaw.rag --stats  # 查看知识库规模
 ```
 
 ### 4. 启动服务
 
 ```bash
-uv run uvicorn mokioclaw.api.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn congclaw.api.main:app --host 127.0.0.1 --port 8000
 ```
 
 启动时自动：建库（幂等）→ Skill 注册中心扫描 + 目录监听 → 后台预热 BGE 模型。健康检查：
@@ -146,7 +146,7 @@ uv run pytest -q        # 225 条全绿
 ### 剧本 1：余额查询（Agent 单工具）
 
 ```bash
-uv run mokioclaw "帮我查一下话费余额"
+uv run congclaw "帮我查一下话费余额"
 ```
 
 链路：意图分流 `agent_service` → think 决定调 `query_balance` → 返回余额 86.50 元 → reflect 校验通过。
@@ -154,7 +154,7 @@ uv run mokioclaw "帮我查一下话费余额"
 ### 剧本 2：套餐咨询（RAG 检索）
 
 ```bash
-uv run mokioclaw "5G畅享套餐包含多少流量？"
+uv run congclaw "5G畅享套餐包含多少流量？"
 ```
 
 链路：意图分流 `rag_query` → BM25 ∥ 稠密并行召回 → RRF 融合 → Cross-Encoder 精排 → 父分片回溯 → 生成答案并附来源片段编号。
@@ -162,7 +162,7 @@ uv run mokioclaw "5G畅享套餐包含多少流量？"
 ### 剧本 3：故障报修（Agent 多工具并行）
 
 ```bash
-uv run mokioclaw "我家宽带从昨天开始断网，帮我报修"
+uv run congclaw "我家宽带从昨天开始断网，帮我报修"
 ```
 
 链路：`report_fault` 建单 + `query_fault_status` 查进度（`asyncio.gather` 并行）→ 返回工单号。
@@ -170,7 +170,7 @@ uv run mokioclaw "我家宽带从昨天开始断网，帮我报修"
 ### 剧本 4：套餐变更（含人工确认）
 
 ```bash
-uv run mokioclaw tui
+uv run congclaw tui
 # 第 1 轮：5G畅享199元档套餐怎么样
 # 第 2 轮：那这个多少钱        ← 指代消解重写为完整问句
 # 第 3 轮：帮我办这个          ← 路由到办理 Agent，槽位自动带出套餐名，推送确认卡片
@@ -180,7 +180,7 @@ uv run mokioclaw tui
 `change_package` 是写操作：执行前先落 `pending_approval` 并向用户推确认卡片，用户确认后才执行；输入"取消"则作废。审批模式支持 `inline`（默认询问）/ `auto`（自动批准，演示用）/ `deny`（一律拒绝）：
 
 ```bash
-uv run mokioclaw --approval-mode inline tui
+uv run congclaw --approval-mode inline tui
 ```
 
 ### 对话管控演示
@@ -211,7 +211,7 @@ curl http://127.0.0.1:8000/api/v1/eval/reports          # 报告列表
 curl http://127.0.0.1:8000/api/v1/eval/reports/{id}     # 报告详情
 ```
 
-报告输出到 `eval/reports/`，包含通过率、LLM-Judge 分项得分（答案质量/推理逻辑/话术合规 1~5 分）、失败用例归因，每条失败用例可回链原始 trace 轨迹（`.mokioclaw/traces/{trace_id}/`）。
+报告输出到 `eval/reports/`，包含通过率、LLM-Judge 分项得分（答案质量/推理逻辑/话术合规 1~5 分）、失败用例归因，每条失败用例可回链原始 trace 轨迹（`.congclaw/traces/{trace_id}/`）。
 
 ## 服务接口一览
 
@@ -228,7 +228,7 @@ curl http://127.0.0.1:8000/api/v1/eval/reports/{id}     # 报告详情
 
 ```text
 MokioAgent/
-├─ src/mokioclaw/
+├─ src/congclaw/
 │  ├─ api/            # FastAPI app、路由（chat/skills/knowledge/eval）、依赖注入
 │  ├─ graph/          # 客服对话主图：state/nodes/workflow/memory/profile_store
 │  ├─ rag/            # RAG 子图：parsing/ingest 离线入库 + state/nodes/workflow 在线检索
@@ -262,13 +262,13 @@ MokioAgent/
 
 ```bash
 # 1. 起服务
-uv run uvicorn mokioclaw.api.main:app
+uv run uvicorn congclaw.api.main:app
 
 # 2. CLI 演示四类业务（另开终端）
-uv run mokioclaw "帮我查一下话费余额"
-uv run mokioclaw "5G畅享套餐包含多少流量？"
-uv run mokioclaw "我家宽带断网了，帮我报修"
-uv run mokioclaw tui        # 多轮：套餐咨询 → 指代 → 办理确认
+uv run congclaw "帮我查一下话费余额"
+uv run congclaw "5G畅享套餐包含多少流量？"
+uv run congclaw "我家宽带断网了，帮我报修"
+uv run congclaw tui        # 多轮：套餐咨询 → 指代 → 办理确认
 
 # 3. 热插拔 Skill（服务不重启）
 curl -X POST http://127.0.0.1:8000/api/v1/skills -H "Content-Type: application/json" -d @demo_skill.json

@@ -1,0 +1,30 @@
+{
+  "trace_id": "trace-20261001-232118-73be3f",
+  "status": "finished",
+  "task": "我的报修单现在怎么样了",
+  "workspace": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-232111-a24541",
+  "trace_dir": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-232111-a24541\\.mokioclaw\\traces\\trace-20261001-232118-73be3f",
+  "events_file": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-232111-a24541\\.mokioclaw\\traces\\trace-20261001-232118-73be3f\\events.jsonl",
+  "summary_file": "E:\\sjc\\work\\2026.08.31中期检查\\其他\\agent-dian001\\MokioAgent-master\\.mokioclaw\\workspaces\\workspace-20261001-232111-a24541\\.mokioclaw\\traces\\trace-20261001-232118-73be3f\\summary.json",
+  "started_at": "2026-10-01T15:21:18.202358+00:00",
+  "ended_at": "2026-10-01T15:21:25.464129+00:00",
+  "duration_ms": 7262,
+  "event_count": 19,
+  "node_visits": {
+    "agent_loop": 1,
+    "intent_router": 1,
+    "query_rewrite": 1
+  },
+  "key_event_types": {
+    "agent_answer": 1,
+    "agent_reflect": 1,
+    "agent_start": 1,
+    "agent_thinking": 1,
+    "intent_decision": 1,
+    "query_rewrite": 1,
+    "session_turn_saved": 1,
+    "skill_call": 1,
+    "skill_result": 1
+  },
+  "errors": []
+}

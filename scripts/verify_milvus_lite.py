@@ -8,7 +8,7 @@
 注意：当项目绝对路径含非 ASCII 字符（如中文目录）时，faiss 在后台持久化 HNSW 索引
 可能打印 "could not open ... for writing" 的非致命报错；不影响写入、按 id 读回与检索。
 如需彻底无告警，可把数据库放到纯英文路径，例如：
-    MILVUS_DB_PATH=C:/mokio_data/milvus_lite.db uv run python scripts/verify_milvus_lite.py
+    MILVUS_DB_PATH=C:/cong_data/milvus_lite.db uv run python scripts/verify_milvus_lite.py
 """
 
 from __future__ import annotations

@@ -26,13 +26,13 @@
 **目标**：把"代码 Agent"清空为干净的客服骨架，装好新基础设施（SQLite + Milvus Lite + 本地模型，零外部服务）。
 
 - [x] **P0-1** 添加依赖：`uv add fastapi uvicorn docling pymilvus sqlalchemy aiosqlite rank_bm25 sentence-transformers`
-- [x] **P0-2** 删除 `src/mokioclaw/agents/`（search_agent.py、code_agent.py）及所有引用
+- [x] **P0-2** 删除 `src/congclaw/agents/`（search_agent.py、code_agent.py）及所有引用
 - [x] **P0-3** 删除代码类工具：`tools/bash_tool.py`、`file_tools.py`、`grep_tool.py`、`notepad_tool.py`、`web_search_tool.py`
-- [x] **P0-4** 清空 [tools/registry.py](./src/mokioclaw/tools/registry.py) 中对已删工具的注册，保证 import 不报错
+- [x] **P0-4** 清空 [tools/registry.py](./src/congclaw/tools/registry.py) 中对已删工具的注册，保证 import 不报错
 - [x] **P0-5** 清理 prompts/stage3、stage4 中 planner/verifier 的代码任务描述（先置空，阶段 2/4 重写）
 - [x] **P0-6** 同步删除/跳过失效旧测试（test_tools、test_graph、test_cli_smoke 中引用已删模块的用例）
-- [x] **P0-7** 新建 `src/mokioclaw/db/` 骨架：`__init__.py`、`engine.py`（aiosqlite 异步引擎，开启 WAL）、`schema.sql`
-- [x] **P0-8** 应用启动时自动执行 schema.sql 初始化 `data/telecom_cs.db`（.env 配 DB_PATH）<!-- 阶段0提供 `uv run python -m mokioclaw.db` 幂等建库；FastAPI 生命周期自动调用在 P1-1 挂载 -->
+- [x] **P0-7** 新建 `src/congclaw/db/` 骨架：`__init__.py`、`engine.py`（aiosqlite 异步引擎，开启 WAL）、`schema.sql`
+- [x] **P0-8** 应用启动时自动执行 schema.sql 初始化 `data/telecom_cs.db`（.env 配 DB_PATH）<!-- 阶段0提供 `uv run python -m congclaw.db` 幂等建库；FastAPI 生命周期自动调用在 P1-1 挂载 -->
 - [x] **P0-9** 验证 Milvus Lite 本地文件模式：写一条向量 → 读回成功
 - [x] **P0-10** 下载 BGE-M3 模型到本地 `models/bge-m3/`
 - [x] **P0-11** 下载 bge-reranker 模型到本地 `models/bge-reranker/`
@@ -52,16 +52,16 @@
 - [x] **P1-1** 新建 `api/main.py`：FastAPI app、生命周期事件（建库、模型预热占位）、健康检查 `/health`
 - [x] **P1-2** 新建 `api/routes/chat.py`：`POST /api/v1/chat`，SSE（text/event-stream）流式返回
 - [x] **P1-3** 新建 `api/deps.py`：依赖注入（DB session、graph 实例、配置）
-- [x] **P1-4** 把 [core/agent.py](./src/mokioclaw/core/agent.py) 的 `stream_session_events()` 包成 async 生成器，事件转 SSE 格式
+- [x] **P1-4** 把 [core/agent.py](./src/congclaw/core/agent.py) 的 `stream_session_events()` 包成 async 生成器，事件转 SSE 格式
 - [x] **P1-5** 过渡期用 `asyncio.to_thread` 包裹同步 LLM/工具调用（阶段 4 移除）
 - [x] **P1-6** 建 SQLite `session` 表模型（session_id、轮次、当前意图、待确认槽位、消息 JSON、创建/更新时间）
-- [x] **P1-7** 改造 [core/session.py](./src/mokioclaw/core/session.py)：load/save 从 session.json 切到 SQLite，接口签名不变
-- [x] **P1-8** 改造 [cli/app.py](./src/mokioclaw/cli/app.py)：改为 HTTP/SSE 客户端请求 `/chat`
+- [x] **P1-7** 改造 [core/session.py](./src/congclaw/core/session.py)：load/save 从 session.json 切到 SQLite，接口签名不变
+- [x] **P1-8** 改造 [cli/app.py](./src/congclaw/cli/app.py)：改为 HTTP/SSE 客户端请求 `/chat`
 - [x] **P1-9** 改造 TUI（cli/tui/）：SSE 流式渲染，审批交互改为后续确认消息（本阶段可先屏蔽）
 
 **🚪 阶段 1 验收门**
-- [x] `uvicorn mokioclaw.api.main:app` 启动成功
-- [x] `mokioclaw "你好"` 经 HTTP 拿到流式回复
+- [x] `uvicorn congclaw.api.main:app` 启动成功
+- [x] `congclaw "你好"` 经 HTTP 拿到流式回复
 - [x] 重启服务后历史会话不丢失（SQLite 持久化验证）
 
 ---
@@ -70,13 +70,13 @@
 
 **目标**：五路意图判定 + 追问澄清（≤5 轮）+ 兜底，用占位引擎先跑通对话管控。
 
-- [x] **P2-1** 扩展 [graph/state.py](./src/mokioclaw/graph/state.py)：`intent_category`、`clarify_count`、`pending_slots`、`fallback_reason`、`unknown_count`
+- [x] **P2-1** 扩展 [graph/state.py](./src/congclaw/graph/state.py)：`intent_category`、`clarify_count`、`pending_slots`、`fallback_reason`、`unknown_count`
 - [x] **P2-2** 写意图识别 prompt：四类业务定义 + 正/反例，输出结构化 JSON（类别、置信度、理由、待补槽位）
 - [x] **P2-3** 改造 `intent_router_node`：输出 rag_query / agent_service / clarify / irrelevant / unknown 五类
 - [x] **P2-4** 新增 `clarify_node`：按 pending_slots 生成追问话术，`clarify_count += 1`
 - [x] **P2-5** 新增 `fallback_node`：兜底话术（说明服务边界 + 引导回四类业务），记录 fallback_reason
 - [x] **P2-6** 强制兜底逻辑：`clarify_count >= 5` 或连续 unknown 达阈值 → 直接路由 fallback
-- [x] **P2-7** 重排 [graph/workflow.py](./src/mokioclaw/graph/workflow.py)：intent_router 条件边 → rag_answer / agent_loop / clarify / fallback
+- [x] **P2-7** 重排 [graph/workflow.py](./src/congclaw/graph/workflow.py)：intent_router 条件边 → rag_answer / agent_loop / clarify / fallback
 - [x] **P2-8** `rag_answer` 占位节点：回复"知识库建设中"
 - [x] **P2-9** `agent_loop` 占位节点：回复"转人工预处理中"
 - [x] **P2-10** 编写 10 条意图测试输入（五类各覆盖，含模糊与无关）
@@ -117,7 +117,7 @@
 
 ### 3C 组装与接线
 - [x] **P3-20** `rag/workflow.py` 的 `build_rag_subgraph()`：START 两条出边并行召回 → fusion → rerank → gate 条件边 → parent_lookup → generate / rewrite_once / rag_fallback
-- [x] **P3-21** 主图 [graph/workflow.py](./src/mokioclaw/graph/workflow.py) 用编译后的子图替换 rag_answer 占位（子图在同步 rag_answer 节点内以 asyncio.run+astream 驱动，问句进/答案+来源出，原因见踩坑记录）
+- [x] **P3-21** 主图 [graph/workflow.py](./src/congclaw/graph/workflow.py) 用编译后的子图替换 rag_answer 占位（子图在同步 rag_answer 节点内以 asyncio.run+astream 驱动，问句进/答案+来源出，原因见踩坑记录）
 - [x] **P3-22** 各节点中间结果（两路命中、融合分、精排分、证据）写入 trace（子图 custom 事件经 rag_answer 节点转发，trace 无需改动）
 
 **🚪 阶段 3 验收门**
@@ -147,7 +147,7 @@
 - [x] **P4-11** Skill 管理接口：`GET/POST/DELETE /api/v1/skills`
 
 ### 4B Agent 推理子图
-- [x] **P4-12** 思考节点（planner 改造）：客服域 prompt，分析对话状态决定调用哪些 Skill（[agent/nodes.py](./src/mokioclaw/agent/nodes.py) `think_node`，实时 bind_tools 注册表）
+- [x] **P4-12** 思考节点（planner 改造）：客服域 prompt，分析对话状态决定调用哪些 Skill（[agent/nodes.py](./src/congclaw/agent/nodes.py) `think_node`，实时 bind_tools 注册表）
 - [x] **P4-13** 工具编排节点：单轮支持多工具并行（asyncio.gather，`act_node` 结果按调用序保序）
 - [x] **P4-14** 反思校验节点（verifier 改造）：校验工具结果业务一致性（`reflect_node`，致命错误码 account_not_found/same_package/approval_denied 等直接 fallback 不重试）
 - [x] **P4-15** 失败计数 `attempts`：异常/校验失败超阈值走兜底话术（`max_attempts` 默认 3）
@@ -167,12 +167,12 @@
 **目标**：指代消解生效，分层记忆完整，跨会话可恢复用户摘要。
 
 - [x] **P5-1** 新增 `query_rewrite_node`，置于 intent_router 之前（主图 START→query_rewrite→intent_router）
-- [x] **P5-2** 重写 prompt：输入短期窗口 + 当前问题，输出独立完整问句（[prompts/memory.py](./src/mokioclaw/prompts/memory.py) `QUERY_REWRITE_PROMPT`，JSON 协议 `{changed, rewritten, reason}`）
+- [x] **P5-2** 重写 prompt：输入短期窗口 + 当前问题，输出独立完整问句（[prompts/memory.py](./src/congclaw/prompts/memory.py) `QUERY_REWRITE_PROMPT`，JSON 协议 `{changed, rewritten, reason}`）
 - [x] **P5-3** 无指代/省略时原样透传（prompt 判定 + 单测覆盖：首轮无窗口不调模型、changed=false、模型异常/非法 JSON 均安全透传）
-- [x] **P5-4** 改造 [graph/memory.py](./src/mokioclaw/graph/memory.py)：working 层 = 短期会话窗口 + 当前意图 + 待确认槽位（`build_customer_memory`）
+- [x] **P5-4** 改造 [graph/memory.py](./src/congclaw/graph/memory.py)：working 层 = 短期会话窗口 + 当前意图 + 待确认槽位（`build_customer_memory`）
 - [x] **P5-5** history 层 = 长期用户摘要（历史咨询主题、在办工单、偏好套餐）；新增检索证据层
-- [x] **P5-6** SQLite 建 `user_profile` 表（phone 主键，[schema.sql](./src/mokioclaw/db/schema.sql) + [models.py](./src/mokioclaw/db/models.py) `UserProfileModel`）
-- [x] **P5-7** 会话结束时由压缩机制生成长期摘要并落库（[graph/profile_store.py](./src/mokioclaw/graph/profile_store.py) 增量压缩，turn_count 水位幂等；LLM 优先，异常退化为规则合并；core/agent 回合闭环后触发，`PROFILE_AUTO_COMPRESS=0` 可关）
+- [x] **P5-6** SQLite 建 `user_profile` 表（phone 主键，[schema.sql](./src/congclaw/db/schema.sql) + [models.py](./src/congclaw/db/models.py) `UserProfileModel`）
+- [x] **P5-7** 会话结束时由压缩机制生成长期摘要并落库（[graph/profile_store.py](./src/congclaw/graph/profile_store.py) 增量压缩，turn_count 水位幂等；LLM 优先，异常退化为规则合并；core/agent 回合闭环后触发，`PROFILE_AUTO_COMPRESS=0` 可关）
 - [x] **P5-8** 新会话开始时装载对应用户的长期摘要（按手机号维度跨 workspace，`profile_loaded` 事件；注入主图 user_profile 层）
 - [x] **P5-9** 统一四层提示词组装入口（系统提示词 → 记忆 → 证据 → 用户问题），各节点共用（`assemble_layered_messages`/`compose_layered_content`；router/clarify/RAG generate/Agent think+finalize 全部收口）
 
@@ -186,7 +186,7 @@
 
 **目标**：一键跑评测，自动输出含规则校验与 LLM-Judge 的报告。
 
-- [x] **P6-1** 扩展 [core/trace.py](./src/mokioclaw/core/trace.py)：记录意图判定、RAG 召回 Top-K、工具入参出参、反思校验结论
+- [x] **P6-1** 扩展 [core/trace.py](./src/congclaw/core/trace.py)：记录意图判定、RAG 召回 Top-K、工具入参出参、反思校验结论
 - [x] **P6-2** `eval/collector.py`：从 trace 采集会话轨迹
 - [x] **P6-3** `eval/normalizer.py`：归一化为标准评测样本（输入/期望/实际轨迹/工具调用序列）
 - [x] **P6-4** `eval/rule_checks.py`：分流正确性、工具参数合法性、兜底触发、追问 ≤5 轮断言
@@ -213,7 +213,7 @@
 
 ## 总验收 Checklist（对应 PRD 第 8 节）
 
-> 2026-10-01 已通过 [scripts/acceptance_check.py](./scripts/acceptance_check.py) 对运行中服务（真实 LLM + 本地模型）逐项实测，**8/8 全部通过**。复现命令：先 `uv run uvicorn mokioclaw.api.main:app` 起服务，再 `uv run python scripts/acceptance_check.py`。
+> 2026-10-01 已通过 [scripts/acceptance_check.py](./scripts/acceptance_check.py) 对运行中服务（真实 LLM + 本地模型）逐项实测，**8/8 全部通过**。复现命令：先 `uv run uvicorn congclaw.api.main:app` 起服务，再 `uv run python scripts/acceptance_check.py`。
 
 - [x] 1. 四类业务（余额、套餐、故障、办理）多轮对话端到端走通，意图分流正确
   - 实测：余额 `query_balance` ✓；套餐 `rag_query` ✓；故障两轮剧本（先追问地址→补地址后 `report_fault` 建单）✓；办理 `change_package` 确认卡片 ✓
@@ -261,7 +261,7 @@
 | 2026-10-01 | P3-3/8 | Milvus Lite 两个坑：①新客户端连接已存在的 collection 时处于 `released` 状态，search 前必须显式 `client.load_collection()`（同进程 insert 后不受影响，跨进程必现）；②P0-9 记的中文路径 faiss 告警在"索引文件没写成"时并非纯告警——跨进程 load 会直接抛 `could not open ...idx for writing`，沙箱环境还会按乱码路径拦截。规避：`MILVUS_DB_PATH` 指向纯英文路径（`.env.example` 已注明）。 |
 | 2026-10-01 | P3-15 | 证据门阈值不能拍脑袋：初始 0.35/-10 在小语料（80 chunk）上形同虚设——BM25/向量检索总会返回最近结果，bge-reranker 对无关问题也给 raw≈0.0（prob≈0.50），库外问题（股市/电影/菜谱）全部误过门。按实测分布校准为 **prob≥0.53 且 raw≥0.15**（库内最弱相关 0.21/0.55，库外最高 0.003/0.50），3 条库外问题全部正确走 rewrite→fallback。 |
 | 2026-10-01 | P3-14 | CPU 上 Cross-Encoder 成本与候选数线性（热身后约 0.2s/对，首次另含约 7s 模型加载）：20 候选 P95≈2.7s，新增 `RAG_RERANK_INPUT_TOP_N=8`（P95≈2.4s 且 20/20 不丢召回；N=6 约 1.7s 但"新装宽带几天"这类弱相关问的正确片段排在 RRF 第 7 位会被截掉，19/20）。冷启动由 FastAPI lifespan 后台线程预热（`RAG_PREWARM=0` 可关）。 |
-| 2026-10-01 | P3-9/测试 | ①上传接口依赖 `python-multipart`，FastAPI 的 `UploadFile` 不会自动安装，需 `uv add python-multipart`。②子图测试统一在 `mokioclaw.rag.nodes` 命名空间打桩（节点是 `from ...retrieval import bm25_search` 形式导入）；阶段 2 意图测试里 rag_query 用例会真实挂载子图，必须同步打桩检索层走空召回兜底，否则会真跑 BGE/Milvus。全量 147 条测试通过（新增 14 条 RAG 子图测试）。 |
+| 2026-10-01 | P3-9/测试 | ①上传接口依赖 `python-multipart`，FastAPI 的 `UploadFile` 不会自动安装，需 `uv add python-multipart`。②子图测试统一在 `congclaw.rag.nodes` 命名空间打桩（节点是 `from ...retrieval import bm25_search` 形式导入）；阶段 2 意图测试里 rag_query 用例会真实挂载子图，必须同步打桩检索层走空召回兜底，否则会真跑 BGE/Milvus。全量 147 条测试通过（新增 14 条 RAG 子图测试）。 |
 | 2026-10-01 | P3-10 | 入库链路用短连接 aiosqlite（每次操作开新连接）而非全局 SQLAlchemy 引擎：子图在 rag_answer 节点内用 `asyncio.run` 起新事件循环，跨循环复用连接会报错；参考 core/session.py 的既有模式。8 份知识文档（md/html/txt 三种格式）验证 Docling HTML 解析无标签残留，共 46 个父分片/80 个子分片。 |
 | 2026-10-01 | P4-9 | SkillRegistry 两个隐蔽 bug：①初始化 `_dirs` 时元组括号写成 `(Path(...)), "external"`（单元素元组漏逗号会被解包成单值），目录结构直接破坏；②内置 Skill 热卸载最初用 `set` 记路径，导致注销后永远无法恢复——改为 `dict[路径→注销时 mtime_ns]`：mtime 未变保持注销，文件内容变更（mtime 变化）自动恢复。另：改名热重载分支误用 `LoadedSkill.name`（dataclass 无此字段，应为 `.skill.name`），文件内改 Skill 名会崩。 |
 | 2026-10-01 | P4-12/P4-17 | LangGraph 1.x 铁律：图中只要存在 async 节点，整张图必须用 `astream/ainvoke` 驱动（同步 `.stream()` 报 `No synchronous function provided`）。阶段 4 主图入口节点（intent_router/clarify/rag_answer/agent_loop）全部 async 化，core/agent 的 native async 生成器直接 astream；阶段 1「工作线程 + queue 回流」桥接删除，仅 legacy complex workflow 保留 `asyncio.to_thread` 逐元素适配。测试侧所有入口 Fake 必须同时实现 `stream` 与 `astream`。 |
@@ -274,9 +274,9 @@
 | 2026-10-01 | P5-7 | 长期摘要压缩必须有无 LLM 兜底：测试/离线环境 create_model 直接抛错，`_rule_based_merge` 以工具轨迹（skill_call→主题映射、args 提套餐名、report_fault 结果提工单）为强信号 + 路由兜底主题 + 正则抽套餐名，保证跨会话记忆永不依赖外部模型；turn_count 水位内幂等返回，不重复压缩。压缩/落库异常在会话流内被吞成 profile_update_error 事件，绝不阻断主对话。 |
 | 2026-10-01 | P5-9 | 子图与主图状态解耦：RAG/Agent 子图不直接读主图 state，由 query_rewrite 首次装配时预渲染 memory_text，主图节点经 sub_input 的 `memory_context` 透传；子图节点缺省时回退旧 session_context 标签。legacy complex workflow 仍用旧 build_layered_memory（planner/verifier 依赖），两套入口并存不删旧。 |
 | 2026-10-01 | P5 测试 | 验收门断言点：写操作（change_package）的人工确认卡片在 Skill **执行之前**短路，事件流只有 agent_thinking→agent_confirm_required，没有 skill_call/skill_result；槽位是否带出套餐名要断言 `agent_thinking.calls[].args.target_package` 而非 skill_call。新增 test_stage5_memory.py 17 条（重写透传/异常 6 + 四层组装 4 + profile 仓储/压缩 5 + 三剧本 1 + 跨会话 1），全量 211 条通过。 |
-| 2026-10-01 | P6-1 | 原生 async 路径此前不持久化 trace（仅 legacy complex workflow 通过 TraceRecorder 写），导致评测无轨迹可采。新增 `SessionTraceRecorder`（async、不依赖 RuntimeState），在 `_stream_session_events_native` 内 try/finally 包裹，记录 intent_decision/rag_retrieve/rag_rerank/rag_gate/skill_call/skill_result/agent_reflect/clarify_question/fallback_reply/agent_answer/rag_answer/rag_fallback/agent_fallback，写 `events.jsonl`+`summary.json` 到 `{workspace}/.mokioclaw/traces/{trace_id}/`。文件写入用 `asyncio.to_thread` 避免阻塞事件循环。 |
+| 2026-10-01 | P6-1 | 原生 async 路径此前不持久化 trace（仅 legacy complex workflow 通过 TraceRecorder 写），导致评测无轨迹可采。新增 `SessionTraceRecorder`（async、不依赖 RuntimeState），在 `_stream_session_events_native` 内 try/finally 包裹，记录 intent_decision/rag_retrieve/rag_rerank/rag_gate/skill_call/skill_result/agent_reflect/clarify_question/fallback_reply/agent_answer/rag_answer/rag_fallback/agent_fallback，写 `events.jsonl`+`summary.json` 到 `{workspace}/.congclaw/traces/{trace_id}/`。文件写入用 `asyncio.to_thread` 避免阻塞事件循环。 |
 | 2026-10-01 | P6-4 | 工具参数校验必须复用 SkillRegistry：每条 skill_call 按 registry 里的 manifest 校验 required 参数与枚举值，而非硬编码白名单。这样新增 Skill 自动纳入评测，零配置。 |
-| 2026-10-01 | P6-5 | LLM-Judge 退化：`create_model` 在函数内延迟 import（来自 `mokioclaw.providers.openai_provider`），模型不可用时回退规则评分（`fallback=True`）。测试 monkeypatch 目标必须是 `mokioclaw.providers.openai_provider.create_model`（import 源），而非 `llm_judge` 模块级名。 |
+| 2026-10-01 | P6-5 | LLM-Judge 退化：`create_model` 在函数内延迟 import（来自 `congclaw.providers.openai_provider`），模型不可用时回退规则评分（`fallback=True`）。测试 monkeypatch 目标必须是 `congclaw.providers.openai_provider.create_model`（import 源），而非 `llm_judge` 模块级名。 |
 | 2026-10-01 | P6- runner | 评测 runner 用 `approval_mode="auto"` 避免人工确认阻塞；DB 引擎是进程单例，runner 测试结束必须 `dispose_engine()`，否则后续测试 `load_or_create_session` 会读到上一个测试的 DB 路径（session 存错库，跨轮计数断言失败）。 |
 | 2026-10-01 | P6 测试 | 新增 tests/test_eval_pipeline.py 14 条（collector/normalizer/rule_checks 4 + llm_judge 2 + report 2 + dataset 1 + runner 端到端 1 + API 3 + trace recorder 1），全量 225 条通过。端到端 runner 用 stub 模型跑通 balance 查询，rule_checks 全绿，llm_judge 退化路径正常。 |
 | | | |

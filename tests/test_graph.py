@@ -7,9 +7,9 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 
-from mokioclaw.core.state import RuntimeState
-from mokioclaw.graph.memory import build_layered_memory, persist_history_summary, read_history_summary
-from mokioclaw.graph.nodes import (
+from congclaw.core.state import RuntimeState
+from congclaw.graph.memory import build_layered_memory, persist_history_summary, read_history_summary
+from congclaw.graph.nodes import (
     agent_loop_node,
     clarify_node,
     context_compressor_node,
@@ -27,7 +27,7 @@ from mokioclaw.graph.nodes import (
     verifier_node,
     verifier_route,
 )
-from mokioclaw.graph.workflow import build_workflow
+from congclaw.graph.workflow import build_workflow
 
 
 def test_model_verifier_passes_from_json(monkeypatch, tmp_path: Path) -> None:
@@ -44,7 +44,7 @@ def test_model_verifier_passes_from_json(monkeypatch, tmp_path: Path) -> None:
                 )
             )
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
     state = {
         "runtime": RuntimeState(workspace=tmp_path),
         "task": "demo",
@@ -70,7 +70,7 @@ def test_model_verifier_invalid_json_fails_and_routes_back(monkeypatch, tmp_path
         def invoke(self, messages):
             return AIMessage(content="not json")
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
     state = {
         "runtime": RuntimeState(workspace=tmp_path),
         "task": "demo",
@@ -121,7 +121,7 @@ def test_intent_router_routes_rag_query_with_model_json(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content='{"category":"rag_query","confidence":0.9,"reason":"资费咨询","missing_slots":[]}')
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(intent_router_node({"task": "5G 融合套餐每月多少钱", "clarify_count": 3, "unknown_count": 2}))
 
@@ -142,7 +142,7 @@ def test_intent_router_routes_agent_service_with_model_json(monkeypatch) -> None
         def invoke(self, messages):
             return AIMessage(content='{"category":"agent_service","confidence":0.85,"reason":"办理诉求","missing_slots":[]}')
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(intent_router_node({"task": "帮我开通国际漫游"}))
 
@@ -159,7 +159,7 @@ def test_intent_router_routes_clarify_and_keeps_pending_slots(monkeypatch) -> No
         def invoke(self, messages):
             return AIMessage(content='{"category":"clarify","confidence":0.7,"reason":"信息不全","missing_slots":[]}')
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(intent_router_node({"task": "帮我办一下那个", "pending_slots": ["号码"], "clarify_count": 1}))
 
@@ -178,7 +178,7 @@ def test_intent_router_routes_irrelevant_to_fallback(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content='{"category":"irrelevant","confidence":0.95,"reason":"超出客服范围","missing_slots":[]}')
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(intent_router_node({"task": "帮我写一首诗"}))
 
@@ -196,7 +196,7 @@ def test_intent_router_low_confidence_treated_as_unknown(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content='{"category":"clarify","confidence":0.3,"reason":"拿不准","missing_slots":[]}')
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(intent_router_node({"task": "那个东西怎么样了"}))
 
@@ -214,7 +214,7 @@ def test_intent_router_invalid_json_defaults_to_unknown(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content="not json")
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(intent_router_node({"task": "嗯嗯"}))
 
@@ -231,7 +231,7 @@ def test_intent_router_unknown_streak_forces_fallback(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content='{"category":"unknown","confidence":0.2,"reason":"无法判断","missing_slots":[]}')
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(intent_router_node({"task": "？？", "unknown_count": 1}))
 
@@ -248,7 +248,7 @@ def test_intent_router_clarify_exceeded_forces_fallback(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content='{"category":"clarify","confidence":0.7,"reason":"仍不明确","missing_slots":[]}')
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(intent_router_node({"task": "还是那个事", "clarify_count": 5}))
 
@@ -265,7 +265,7 @@ def test_clarify_node_asks_question_and_increments_count(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content="请问您想查询话费还是办理套餐呢？")
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(clarify_node({"task": "帮我办一下", "clarify_count": 2, "pending_slots": ["号码"]}))
 
@@ -282,7 +282,7 @@ def test_clarify_node_uses_default_question_when_model_fails(monkeypatch) -> Non
         def invoke(self, messages):
             raise RuntimeError("llm down")
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
 
     result = asyncio.run(clarify_node({"task": "那个", "clarify_count": 0}))
 
@@ -324,11 +324,11 @@ def test_rag_answer_node_drives_rag_subgraph(monkeypatch) -> None:
         def invoke(self, messages):
             return AIMessage(content="规范的检索问句")
 
-    monkeypatch.setattr("mokioclaw.rag.nodes.bm25_search", empty_search)
-    monkeypatch.setattr("mokioclaw.rag.nodes.dense_search", empty_search)
-    monkeypatch.setattr("mokioclaw.rag.nodes.rerank_hits", empty_rerank)
-    monkeypatch.setattr("mokioclaw.rag.nodes.build_parent_evidence", empty_parents)
-    monkeypatch.setattr("mokioclaw.rag.nodes.create_model", lambda: FakeRagModel())
+    monkeypatch.setattr("congclaw.rag.nodes.bm25_search", empty_search)
+    monkeypatch.setattr("congclaw.rag.nodes.dense_search", empty_search)
+    monkeypatch.setattr("congclaw.rag.nodes.rerank_hits", empty_rerank)
+    monkeypatch.setattr("congclaw.rag.nodes.build_parent_evidence", empty_parents)
+    monkeypatch.setattr("congclaw.rag.nodes.create_model", lambda: FakeRagModel())
 
     result = asyncio.run(rag_answer_node({"task": "今天天气怎么样"}))
 
@@ -353,7 +353,7 @@ def test_agent_loop_node_drives_agent_subgraph_with_direct_reply(monkeypatch, tm
         async def ainvoke(self, messages, **kwargs):
             return AIMessage(content="好的，这是 Agent 子图的直接回复。")
 
-    monkeypatch.setattr("mokioclaw.agent.nodes.create_model", lambda: FakeAgentModel())
+    monkeypatch.setattr("congclaw.agent.nodes.create_model", lambda: FakeAgentModel())
 
     result = asyncio.run(
         agent_loop_node(
@@ -366,11 +366,11 @@ def test_agent_loop_node_drives_agent_subgraph_with_direct_reply(monkeypatch, tm
 
 
 def test_context_token_limit_defaults_and_env(monkeypatch) -> None:
-    monkeypatch.setattr("mokioclaw.graph.nodes.load_dotenv", lambda: None)
-    monkeypatch.delenv("MOKIO_CONTEXT_TOKEN_LIMIT", raising=False)
+    monkeypatch.setattr("congclaw.graph.nodes.load_dotenv", lambda: None)
+    monkeypatch.delenv("CONG_CONTEXT_TOKEN_LIMIT", raising=False)
     assert get_context_token_limit() == 400000
 
-    monkeypatch.setenv("MOKIO_CONTEXT_TOKEN_LIMIT", "1234")
+    monkeypatch.setenv("CONG_CONTEXT_TOKEN_LIMIT", "1234")
     assert get_context_token_limit() == 1234
 
 
@@ -379,7 +379,7 @@ def test_estimate_context_tokens_uses_model_counter(monkeypatch, tmp_path: Path)
         def get_num_tokens_from_messages(self, messages):
             return 42 + len(messages)
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
     result = estimate_context_tokens(
         {
             "runtime": RuntimeState(workspace=tmp_path),
@@ -392,8 +392,8 @@ def test_estimate_context_tokens_uses_model_counter(monkeypatch, tmp_path: Path)
 
 
 def test_context_monitor_does_not_compress_below_limit(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("MOKIO_CONTEXT_TOKEN_LIMIT", "100")
-    monkeypatch.setattr("mokioclaw.graph.nodes.estimate_context_tokens", lambda state: 10)
+    monkeypatch.setenv("CONG_CONTEXT_TOKEN_LIMIT", "100")
+    monkeypatch.setattr("congclaw.graph.nodes.estimate_context_tokens", lambda state: 10)
     result = context_monitor_node(
         {
             "runtime": RuntimeState(workspace=tmp_path),
@@ -408,8 +408,8 @@ def test_context_monitor_does_not_compress_below_limit(monkeypatch, tmp_path: Pa
 
 
 def test_context_monitor_compresses_at_limit(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("MOKIO_CONTEXT_TOKEN_LIMIT", "100")
-    monkeypatch.setattr("mokioclaw.graph.nodes.estimate_context_tokens", lambda state: 100)
+    monkeypatch.setenv("CONG_CONTEXT_TOKEN_LIMIT", "100")
+    monkeypatch.setattr("congclaw.graph.nodes.estimate_context_tokens", lambda state: 100)
     result = context_monitor_node(
         {
             "runtime": RuntimeState(workspace=tmp_path),
@@ -429,9 +429,9 @@ def test_context_compressor_removes_old_messages_and_preserves_state(monkeypatch
         calls["count"] += 1
         return 1000 if calls["count"] == 1 else 50
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.estimate_context_tokens", fake_estimate)
+    monkeypatch.setattr("congclaw.graph.nodes.estimate_context_tokens", fake_estimate)
     monkeypatch.setattr(
-        "mokioclaw.graph.nodes._compress_context_with_model",
+        "congclaw.graph.nodes._compress_context_with_model",
         lambda state: {
             "summary": "compressed summary",
             "active_goal": "finish demo",
@@ -485,7 +485,7 @@ def test_planner_writes_default_customer_service_plan(monkeypatch, tmp_path: Pat
         def bind_tools(self, tools):
             return FakeBoundModel()
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeModel())
     result = planner_node(
         {
             "task": "我想查一下我的话费余额",

@@ -1,5 +1,5 @@
 [project]
-name = "mokioclaw"
+name = "congclaw"
 version = "0.1.0"
 description = "A teaching-first mini CodeAgent built from ToolCall to Claw."
 readme = "README.md"
@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mokioclaw = "mokioclaw.cli.app:app"
+congclaw = "congclaw.cli.app:app"
 
 [dependency-groups]
 dev = [

@@ -1,11 +1,11 @@
-# PRD：电信客服业务智能体（基于 MokioClaw 改造）
+# PRD：电信客服业务智能体（基于 CongClaw 改造）
 
 | 项 | 内容 |
 | --- | --- |
 | 文档版本 | v1.0 |
 | 编写日期 | 2026-10-01 |
 | 文档定位 | 学习/面试项目改造规划：现状差距 → 目标架构 → 分阶段改造步骤 → 每步验收标准 |
-| 基线代码 | MokioClaw（教学向 Mini CodeAgent，LangChain + LangGraph + Typer CLI + Textual TUI） |
+| 基线代码 | CongClaw（教学向 Mini CodeAgent，LangChain + LangGraph + Typer CLI + Textual TUI） |
 | 目标产品 | 面向电信客服高频场景的业务智能体（FastAPI + LangGraph，RAG 快查 + Agent 深推理双引擎） |
 
 ---
@@ -14,9 +14,9 @@
 
 ### 1.1 背景
 
-现有 MokioClaw 是一个"写代码"的通用 MultiAgent：planner 分派 searchAgent / codeAgent，verifier 验收，配套 CLI/TUI 交互、分层记忆、上下文压缩、checkpoint、trace。它的骨架（LangGraph 编排、意图路由雏形、分层记忆、工具注册、验收反思、链路观测）与电信客服智能体高度同构，但领域内容完全不同。
+现有 CongClaw 是一个"写代码"的通用 MultiAgent：planner 分派 searchAgent / codeAgent，verifier 验收，配套 CLI/TUI 交互、分层记忆、上下文压缩、checkpoint、trace。它的骨架（LangGraph 编排、意图路由雏形、分层记忆、工具注册、验收反思、链路观测）与电信客服智能体高度同构，但领域内容完全不同。
 
-本项目在**保留骨架、替换血肉**的思路下，把 MokioClaw 改造为电信客服智能体：面向余额查询、套餐咨询、故障报修、业务办理四类高频场景，支撑多轮复杂对话。
+本项目在**保留骨架、替换血肉**的思路下，把 CongClaw 改造为电信客服智能体：面向余额查询、套餐咨询、故障报修、业务办理四类高频场景，支撑多轮复杂对话。
 
 ### 1.2 目标
 
@@ -34,29 +34,29 @@
 
 ---
 
-## 2. 现状盘点：MokioClaw 资产映射
+## 2. 现状盘点：CongClaw 资产映射
 
 改造的核心原则：**能复用的不重写，该删除的不保留**。下表是现有代码与新系统的映射关系，后续所有改造步骤都以此表为索引。
 
 | 现有模块 | 文件 | 处置 | 映射到新系统 |
 | --- | --- | --- | --- |
-| LangGraph 工作流组装 | [workflow.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/workflow.py) | **改造** | 重排为 `intent_router → rag_answer / agent_loop / clarify / fallback` 的客服对话图 |
-| 意图路由（chat/workflow 二路） | [nodes.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/nodes.py) 中 `intent_router_node` | **改造** | 扩展为四路分流：RAG / Agent / 追问澄清 / 兜底，加追问计数 |
-| 分层记忆（rules / working / history） | [memory.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/memory.py) | **改造** | 变为客服版三层：系统提示词层 / 短期会话窗口 / 长期用户摘要，加检索证据层 |
-| 会话管理（session.json 文件） | [session.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/core/session.py) | **改造** | 从本地文件迁移到 SQLite 会话表，支撑服务化持久化 |
-| Graph state 定义 | [state.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/state.py) | **改造** | 字段换成客服域：intent、clarify_count、retrieval_evidence、tool_traces 等 |
+| LangGraph 工作流组装 | [workflow.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/workflow.py) | **改造** | 重排为 `intent_router → rag_answer / agent_loop / clarify / fallback` 的客服对话图 |
+| 意图路由（chat/workflow 二路） | [nodes.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/nodes.py) 中 `intent_router_node` | **改造** | 扩展为四路分流：RAG / Agent / 追问澄清 / 兜底，加追问计数 |
+| 分层记忆（rules / working / history） | [memory.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/memory.py) | **改造** | 变为客服版三层：系统提示词层 / 短期会话窗口 / 长期用户摘要，加检索证据层 |
+| 会话管理（session.json 文件） | [session.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/core/session.py) | **改造** | 从本地文件迁移到 SQLite 会话表，支撑服务化持久化 |
+| Graph state 定义 | [state.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/state.py) | **改造** | 字段换成客服域：intent、clarify_count、retrieval_evidence、tool_traces 等 |
 | 上下文压缩 | nodes.py 中 `context_compressor_node` | **保留** | 逻辑不变，压缩对象从"代码任务 transcript"变为"多轮对话 transcript" |
-| 工具注册表（静态列表） | [registry.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/tools/registry.py) | **改造** | 升级为 Skill 注册中心：动态注册、热插拔加载 |
+| 工具注册表（静态列表） | [registry.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/tools/registry.py) | **改造** | 升级为 Skill 注册中心：动态注册、热插拔加载 |
 | verifier 验收节点 | nodes.py 中 `verifier_node` | **改造** | 变成 Agent 引擎内的"结果反思校验"节点 |
-| Trace 链路观测 | [trace.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/core/trace.py) | **保留扩展** | 作为评测流水线的"轨迹采集"数据源 |
-| CLI / Textual TUI | [app.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/cli/app.py)、tui/ | **改造** | 不再直连本地 graph，改为调用 FastAPI 接口的演示客户端 |
+| Trace 链路观测 | [trace.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/core/trace.py) | **保留扩展** | 作为评测流水线的"轨迹采集"数据源 |
+| CLI / Textual TUI | [app.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/cli/app.py)、tui/ | **改造** | 不再直连本地 graph，改为调用 FastAPI 接口的演示客户端 |
 | searchAgent / codeAgent | agents/ | **删除** | 由"电信业务 Agent"取代，文件操作族工具随之退场 |
 | Bash / File / Grep / Notepad 工具 | tools/ 下 bash_tool、file_tools、grep_tool、notepad_tool | **删除** | 客服 Agent 不需要操作本地文件与命令行 |
 | Tavily WebSearch 工具 | tools/web_search_tool.py | **替换** | 由 RAG 检索工具取代（知识库私有化，不搜公网） |
 | checkpoint / approval | core/checkpoint.py、core/approval.py | **保留（降优先级）** | 高危业务办理（如变更套餐）复用 approval 机制做人工确认 |
 | —（新增） | api/、rag/、skills/、eval/、db/ | **新增** | FastAPI 层、检索链路、电信工具集、评测流水线、元数据库 |
 
-**命名约定**：Python 包名保持 `mokioclaw` 不变（避免大规模 import 重命名），产品对外名称为"电信客服智能体"，CLI 命令保留 `mokioclaw` 作为演示入口。
+**命名约定**：Python 包名保持 `congclaw` 不变（避免大规模 import 重命名），产品对外名称为"电信客服智能体"，CLI 命令保留 `congclaw` 作为演示入口。
 
 ---
 
@@ -99,7 +99,7 @@
 | 承接意图 | 套餐咨询、资费规则、业务知识问答 | 余额查询、故障报修、业务办理 |
 | 实现形态 | **LangGraph 子图**（`rag_subgraph`），每一步检索/融合/精排/回溯/生成都是图节点 | **LangGraph 子图**（`agent_subgraph`），思考/工具编排/反思为图节点 |
 | 依赖 | 知识库检索链路 | Skill 工具集 |
-| 复用基线 | 新增为主，子图编译方式参考 [workflow.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/workflow.py) | planner→工具→verifier 循环改造 |
+| 复用基线 | 新增为主，子图编译方式参考 [workflow.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/workflow.py) | planner→工具→verifier 循环改造 |
 
 ### 3.3 RAG 检索子图设计（LangGraph 实现）
 
@@ -130,7 +130,7 @@ RAG **不是**在 `rag_answer` 节点里用普通函数顺序调用，而是独�
 **关键图表达**：
 - 并行召回：`START → retrieve_bm25` 与 `START → retrieve_dense` 两条出边（或 `Send` API fan-out），两节点均为 async 节点，图调度器并发执行，天然等价于 `asyncio.gather`。
 - 条件回退：`evidence_gate` 用 `add_conditional_edges` 路由到生成 / 放宽重写 / `rag_fallback`；重写最多 1 次（`rag_attempts` 计数），避免死循环。
-- 子图接入：`build_rag_subgraph()` 编译产物作为主图的一个 node 挂载（或整体作为条件边目标），与 [build_entry_workflow / build_complex_workflow](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/workflow.py) 的"入口图 + 复杂图"分层模式保持一致。
+- 子图接入：`build_rag_subgraph()` 编译产物作为主图的一个 node 挂载（或整体作为条件边目标），与 [build_entry_workflow / build_complex_workflow](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/workflow.py) 的"入口图 + 复杂图"分层模式保持一致。
 
 ---
 
@@ -143,7 +143,7 @@ RAG **不是**在 `rag_answer` 节点里用普通函数顺序调用，而是独�
   - **短期记忆**：当前会话最近 N 轮原始消息（滑动窗口）。
   - **长期记忆**：跨会话的用户摘要（历史咨询主题、在办工单、偏好套餐），复用现有 `history_summary` 压缩机制生成，存 SQLite。
 - 指代消解与查询重写：`query_rewrite` 节点把"那这个多少钱？"这类指代/省略输入，结合会话历史重写为完整独立问句，再进入意图识别。
-- 分层组装提示词：每个节点按 **系统提示词 → 记忆信息（短期窗口+长期摘要）→ 检索证据 → 用户问题** 四层组装，复用 [memory.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/memory.py) 的 `build_layered_memory` 思路，把 `working_memory` 换成客服域字段。
+- 分层组装提示词：每个节点按 **系统提示词 → 记忆信息（短期窗口+长期摘要）→ 检索证据 → 用户问题** 四层组装，复用 [memory.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/memory.py) 的 `build_layered_memory` 思路，把 `working_memory` 换成客服域字段。
 - 后端工具调度全部 async/await：检索、工具调用、LLM 调用均为异步，FastAPI 单进程可支撑多会话并发。
 
 ### F2 意图识别与任务调度
@@ -200,11 +200,11 @@ RAG 链路以独立 LangGraph 子图 `rag_subgraph` 实现（见 3.3 节），�
 | query_fault_status | 工单进度查询 | 只读 |
 | change_package | 套餐变更办理 | 写操作，**需人工确认**（复用 approval 机制） |
 
-- 工具注册中心：Skill 以目录约定 + 元信息描述文件组织，支持**动态注册与热插拔**——服务运行中增删 Skill 目录即可生效，无需重启（在 [registry.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/tools/registry.py) 静态列表基础上升级为注册表 + 监听加载）。
+- 工具注册中心：Skill 以目录约定 + 元信息描述文件组织，支持**动态注册与热插拔**——服务运行中增删 Skill 目录即可生效，无需重启（在 [registry.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/tools/registry.py) 静态列表基础上升级为注册表 + 监听加载）。
 
 ### F6 自动化评测流水线
 
-- **轨迹采集**：复用 [trace.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/core/trace.py) 的 events.jsonl，补充记录 RAG 召回片段、工具入参出参、意图判定结果。
+- **轨迹采集**：复用 [trace.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/core/trace.py) 的 events.jsonl，补充记录 RAG 召回片段、工具入参出参、意图判定结果。
 - **数据归一化**：把不同会话的轨迹统一成标准评测样本格式（输入、期望、实际轨迹、工具调用序列）。
 - **规则校验**：硬规则断言——意图分流是否正确、工具调用参数是否合法、兜底是否触发、追问是否 ≤5 轮。
 - **LLM-Judge**：对答案质量、推理逻辑、话术合规性打分（1~5 分 + 评语）。
@@ -250,7 +250,7 @@ RAG 链路以独立 LangGraph 子图 `rag_subgraph` 实现（见 3.3 节），�
 
 步骤：
 1. `uv add fastapi uvicorn docling pymilvus sqlalchemy aiosqlite rank_bm25 sentence-transformers`。
-2. 删除领域不符代码：`agents/`（search/code agent）、`tools/bash_tool.py`、`file_tools.py`、`grep_tool.py`、`notepad_tool.py`、`web_search_tool.py`，同步清空 [registry.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/tools/registry.py) 与 planner/verifier prompt 中的代码任务描述。
+2. 删除领域不符代码：`agents/`（search/code agent）、`tools/bash_tool.py`、`file_tools.py`、`grep_tool.py`、`notepad_tool.py`、`web_search_tool.py`，同步清空 [registry.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/tools/registry.py) 与 planner/verifier prompt 中的代码任务描述。
 3. 初始化 SQLite 数据库文件 `data/telecom_cs.db`（建表脚本放 `db/schema.sql`，启动时自动执行）；验证 Milvus Lite 本地文件模式可写可读。
 4. 下载 BGE-M3 与 bge-reranker 模型到本地 `models/` 目录，写最小加载冒烟脚本。
 
@@ -262,21 +262,21 @@ RAG 链路以独立 LangGraph 子图 `rag_subgraph` 实现（见 3.3 节），�
 
 步骤：
 1. 新增 `api/` 目录：`main.py`（FastAPI app）、`routes/chat.py`（`/chat` SSE 流式接口）、`deps.py`（依赖注入）。
-2. 把 [core/agent.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/core/agent.py) 的 `stream_session_events()` 包成 async 生成器，SSE 推送给前端/CLI；底层 LLM 与工具调用逐步改 async（本阶段先 `asyncio.to_thread` 包裹过渡，阶段 4 彻底异步化）。
-3. 会话存储从 session.json 文件迁移到 SQLite `session` 表（改 [session.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/core/session.py) 的 load/save 实现，接口签名不变）。
-4. 改造 [cli/app.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/cli/app.py) 与 TUI：不再本地起 graph，改为 HTTP/SSE 客户端请求 `/chat`。
+2. 把 [core/agent.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/core/agent.py) 的 `stream_session_events()` 包成 async 生成器，SSE 推送给前端/CLI；底层 LLM 与工具调用逐步改 async（本阶段先 `asyncio.to_thread` 包裹过渡，阶段 4 彻底异步化）。
+3. 会话存储从 session.json 文件迁移到 SQLite `session` 表（改 [session.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/core/session.py) 的 load/save 实现，接口签名不变）。
+4. 改造 [cli/app.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/cli/app.py) 与 TUI：不再本地起 graph，改为 HTTP/SSE 客户端请求 `/chat`。
 
-**验收**：`uvicorn` 起服务后，`mokioclaw "你好"` 经 HTTP 拿到流式回复；重启服务后会话历史不丢失。
+**验收**：`uvicorn` 起服务后，`congclaw "你好"` 经 HTTP 拿到流式回复；重启服务后会话历史不丢失。
 
 ### 阶段 2：意图识别与任务调度
 
 **目标**：四路分流 + 追问澄清 + 兜底，先用占位引擎跑通管控逻辑。
 
 步骤：
-1. 扩展 [state.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/state.py)：新增 `intent_category`、`clarify_count`、`pending_slots`、`fallback_reason` 字段。
+1. 扩展 [state.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/state.py)：新增 `intent_category`、`clarify_count`、`pending_slots`、`fallback_reason` 字段。
 2. 改造 `intent_router_node`：输出五类意图（rag_query / agent_service / clarify / irrelevant / unknown），写意图识别 prompt（含四类业务定义与示例）。
 3. 新增 `clarify_node`（生成追问话术，`clarify_count+1`）与 `fallback_node`（兜底话术）；`clarify_count >= 5` 或连续 unknown 达阈值时强制 fallback。
-4. 重排 [workflow.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/workflow.py)：`intent_router` 条件边到 `rag_answer`（占位）/`agent_loop`（占位）/`clarify`/`fallback`。
+4. 重排 [workflow.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/workflow.py)：`intent_router` 条件边到 `rag_answer`（占位）/`agent_loop`（占位）/`clarify`/`fallback`。
 5. 占位引擎：rag_answer 先回"知识库建设中"，agent_loop 先回"转人工预处理"，保证链路通。
 
 **验收**：构造 10 条测试输入覆盖五类意图，分流全部正确；模糊输入连续追问 5 轮后自动兜底；无关请求直接兜底。
@@ -291,7 +291,7 @@ RAG 链路以独立 LangGraph 子图 `rag_subgraph` 实现（见 3.3 节），�
    - 在线检索侧（**全部是子图节点，不放顺序脚本**）：`state.py`（`RagSubState` TypedDict）、`nodes.py`（`retrieve_bm25` / `retrieve_dense` / `rrf_fusion` / `rerank` / `evidence_gate` / `parent_lookup` / `rewrite_once` / `generate` / `rag_fallback` 节点）、`workflow.py`（`build_rag_subgraph()` 组装与编译）。
 2. 在 SQLite 建表 `chunk_meta`（child_id、parent_id、doc_source、position）；建 Milvus collection（child 粒度向量）。
 3. 准备 5~10 份电信知识文档（套餐说明、资费规则、宽带 FAQ）走 `/knowledge/ingest` 入库。
-4. 在 [graph/workflow.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/workflow.py) 主图中把阶段 2 的 `rag_answer` 占位节点替换为 `build_rag_subgraph()` 编译产物（子图作为主图 node 挂载），主图传入重写后问句、接回答案与来源。
+4. 在 [graph/workflow.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/workflow.py) 主图中把阶段 2 的 `rag_answer` 占位节点替换为 `build_rag_subgraph()` 编译产物（子图作为主图 node 挂载），主图传入重写后问句、接回答案与来源。
 5. 图拓扑按 3.3 节实现：START 两条出边并行召回 → `rrf_fusion` → `rerank` → `evidence_gate` 条件边 → `parent_lookup` → `generate` / `rewrite_once`（`rag_attempts` 限 1 次）→ `rag_fallback`。
 6. 所有检索节点实现为 **async 节点**，并发交给 LangGraph 调度器；各节点中间结果写入子图 state 并接入 trace。
 
@@ -316,7 +316,7 @@ RAG 链路以独立 LangGraph 子图 `rag_subgraph` 实现（见 3.3 节），�
 
 步骤：
 1. 新增 `query_rewrite_node`（置于 intent_router 之前）：输入短期窗口 + 当前问题，输出独立完整问句；无指代时原样透传（prompt 判断）。
-2. 改造 [memory.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/graph/memory.py)：`working_memory` 层换成"短期会话窗口 + 当前意图 + 待确认槽位"，`history_summary_store` 换成"长期用户摘要"（历史主题、在办工单），检索证据作为新一层注入。
+2. 改造 [memory.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/graph/memory.py)：`working_memory` 层换成"短期会话窗口 + 当前意图 + 待确认槽位"，`history_summary_store` 换成"长期用户摘要"（历史主题、在办工单），检索证据作为新一层注入。
 3. 长期摘要在会话结束时由压缩机制生成并写 SQLite `user_profile` 表，下次会话开始时装载。
 4. 统一各节点的四层提示词组装入口（系统提示词 → 记忆 → 证据 → 问题）。
 
@@ -327,7 +327,7 @@ RAG 链路以独立 LangGraph 子图 `rag_subgraph` 实现（见 3.3 节），�
 **目标**：评测闭环，一键出报告。
 
 步骤：
-1. 扩展 [trace.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/mokioclaw/core/trace.py)：补充记录意图判定、RAG 召回 Top-K、工具入参出参、反思校验结论。
+1. 扩展 [trace.py](file:///e:/sjc/work/2026.08.31中期检查/其他/agent-dian001/MokioAgent-master/src/congclaw/core/trace.py)：补充记录意图判定、RAG 召回 Top-K、工具入参出参、反思校验结论。
 2. 新增 `eval/` 目录：`collector.py`（轨迹采集）、`normalizer.py`（归一化为标准样本）、`rule_checks.py`（分流正确性/参数合法性/兜底触发/追问轮次断言）、`llm_judge.py`（质量与合规打分）、`report.py`（Markdown 报告）。
 3. 准备 30 条标注评测集（覆盖四类业务 + 模糊 + 无关），`/eval/run` 一键执行并输出报告到 `eval/reports/`。
 
@@ -345,7 +345,7 @@ RAG 链路以独立 LangGraph 子图 `rag_subgraph` 实现（见 3.3 节），�
 
 ```text
 MokioAgent/
-├─ src/mokioclaw/
+├─ src/congclaw/
 │  ├─ api/            # 新增：FastAPI app、路由、依赖注入
 │  ├─ graph/          # 改造：state/nodes/workflow/memory（客服对话主图）
 │  ├─ rag/            # 新增：parsing/ingest 离线入库 + state/nodes/workflow RAG 检索子图

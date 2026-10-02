@@ -16,11 +16,11 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
-from mokioclaw.prompts.agent import AGENT_REFLECT_PROMPT, AGENT_RESPOND_PROMPT
+from congclaw.prompts.agent import AGENT_REFLECT_PROMPT, AGENT_RESPOND_PROMPT
 
 
 _ECHO_SKILL_SOURCE = '''
-from mokioclaw.skills.base import Skill, SkillParameter
+from congclaw.skills.base import Skill, SkillParameter
 
 
 class EchoSkill(Skill):
@@ -43,7 +43,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SKILL_WATCH", "0")
     monkeypatch.setenv("RAG_PREWARM", "0")
 
-    from mokioclaw.api.main import app
+    from congclaw.api.main import app
 
     with TestClient(app) as test_client:
         yield test_client, tmp_path
@@ -78,7 +78,7 @@ def _stub_intent(monkeypatch, category: str = "agent_service") -> None:
         async def ainvoke(self, messages, **kwargs):
             return AIMessage(content=payload)
 
-    monkeypatch.setattr("mokioclaw.graph.nodes.create_model", lambda: FakeIntentModel())
+    monkeypatch.setattr("congclaw.graph.nodes.create_model", lambda: FakeIntentModel())
 
 
 class FakeAgentModel:
@@ -110,7 +110,7 @@ class FakeAgentModel:
 
 
 def _stub_agent(monkeypatch, model: FakeAgentModel) -> None:
-    monkeypatch.setattr("mokioclaw.agent.nodes.create_model", lambda: model)
+    monkeypatch.setattr("congclaw.agent.nodes.create_model", lambda: model)
 
 
 def _chat(client: TestClient, message: str, workspace: str) -> list[dict]:

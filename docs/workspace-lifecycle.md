@@ -1,11 +1,11 @@
-# MokioClaw Workspace 链路讲解
+# CongClaw Workspace 链路讲解
 
-这篇文档用一次真实任务来解释 MokioClaw 从接收用户指令、规划、调用子 Agent、执行命令、保存 checkpoint 到最终总结的完整链路。
+这篇文档用一次真实任务来解释 CongClaw 从接收用户指令、规划、调用子 Agent、执行命令、保存 checkpoint 到最终总结的完整链路。
 
 案例 workspace：
 
 ```text
-/home/mokio/projects/MokioAgent/.mokioclaw/workspaces/workspace-20260522-213832-37ddbd
+/home/cong/projects/MokioAgent/.congclaw/workspaces/workspace-20260522-213832-37ddbd
 ```
 
 用户任务：
@@ -20,7 +20,7 @@
 workspace-20260522-213832-37ddbd/
 ├─ TODO.md
 ├─ glm5.1_highspeed.html
-└─ .mokioclaw/
+└─ .congclaw/
    ├─ bash-outputs/
    ├─ checkpoints/
    │  ├─ RECOVERY.md
@@ -37,7 +37,7 @@ workspace-20260522-213832-37ddbd/
 
 ## 一句话总览
 
-MokioClaw 的一次运行可以理解为：
+CongClaw 的一次运行可以理解为：
 
 ```text
 CLI 创建 workspace
@@ -67,9 +67,9 @@ flowchart TD
     Code --> Files["workspace 文件<br/>例如 glm5.1_highspeed.html"]
     Code --> Bash["BashTool"]
 
-    Bash --> Shims[".mokioclaw/shims<br/>稳定 python / pip"]
-    Bash --> Outputs[".mokioclaw/bash-outputs<br/>长输出落盘"]
-    Bash --> Background[".mokioclaw/background<br/>后台服务输出"]
+    Bash --> Shims[".congclaw/shims<br/>稳定 python / pip"]
+    Bash --> Outputs[".congclaw/bash-outputs<br/>长输出落盘"]
+    Bash --> Background[".congclaw/background<br/>后台服务输出"]
 
     Graph --> Verifier["verifier<br/>读文件 / grep / bash 检查"]
     Verifier --> Final["final<br/>终端总结"]
@@ -102,7 +102,7 @@ sequenceDiagram
     participant K as Checkpoint
     participant T as Trace
 
-    U->>C: uv run mokioclaw "查阅 GLM-5.1 HighSpeed 并做 HTML"
+    U->>C: uv run congclaw "查阅 GLM-5.1 HighSpeed 并做 HTML"
     C->>R: create_runtime()
     R->>R: 创建或复用 workspace
     C->>G: stream_agent_events()
@@ -175,7 +175,7 @@ attempts: 1 / 3
 
 `RECOVERY.md` 是恢复用摘要。它会把任务、计划、todo、验收标准、验证命令、来源、最近总结和近期文件整理到一个短文档里。轻量恢复时，模型主要靠它和 workspace 文件理解“之前做到哪了”。
 
-旧版 `RECOVERY.md` 的 Task 里可能看到多层 `Continue this MokioClaw task from the checkpoint:`，通常说明这个 workspace 曾经被 `--resume` 恢复过多次。当前实现会在 light resume 时去掉已有恢复前缀，再统一加一次恢复语义，避免任务描述越来越长。
+旧版 `RECOVERY.md` 的 Task 里可能看到多层 `Continue this CongClaw task from the checkpoint:`，通常说明这个 workspace 曾经被 `--resume` 恢复过多次。当前实现会在 light resume 时去掉已有恢复前缀，再统一加一次恢复语义，避免任务描述越来越长。
 
 ## 目录什么时候创建
 
@@ -183,10 +183,10 @@ attempts: 1 / 3
 
 创建时机：CLI 调用 `create_runtime()` 时。
 
-默认情况下，MokioClaw 会创建一个新的目录：
+默认情况下，CongClaw 会创建一个新的目录：
 
 ```text
-.mokioclaw/workspaces/workspace-YYYYMMDD-HHMMSS-xxxxxx/
+.congclaw/workspaces/workspace-YYYYMMDD-HHMMSS-xxxxxx/
 ```
 
 如果用户传入 `--workspace` 或 `--resume`，则复用指定目录。
@@ -227,14 +227,14 @@ attempts: 1 / 3
 
 这个案例里 checkpoint 显示 `Context compression: (none)`，所以没有生成 `HISTORY_SUMMARY.md`。
 
-### .mokioclaw/checkpoints/
+### .congclaw/checkpoints/
 
 创建时机：`stream_agent_events()` 开始后，`CheckpointManager.save(status="started")` 第一次执行时。
 
 默认 checkpoint mode 是 `light`，因此会写：
 
 ```text
-.mokioclaw/checkpoints/
+.congclaw/checkpoints/
 ├─ checkpoint.json
 ├─ RECOVERY.md
 └─ git/
@@ -243,7 +243,7 @@ attempts: 1 / 3
 运行过程中，checkpoint 会在关键安全点刷新：开始运行、graph update、失败/审批类工具结果、中断和结束。普通 custom event 只进入 trace，不再每次都触发 workspace manifest 和 git snapshot。任务结束时会写入 `status: finished`。如果用户按 `Ctrl+C`，会写入 `status: interrupted`，CLI 会提示：
 
 ```text
-uv run mokioclaw --resume <workspace>
+uv run congclaw --resume <workspace>
 ```
 
 ### checkpoint.json
@@ -276,7 +276,7 @@ uv run mokioclaw --resume <workspace>
 
 - 这是 workspace 内部的 git 元数据目录。
 - 它只给 checkpoint 文件快照使用，不会污染项目主仓库。
-- 它会排除 `.mokioclaw/checkpoints/` 自身、`.venv/`、`node_modules/` 等目录。
+- 它会排除 `.congclaw/checkpoints/` 自身、`.venv/`、`node_modules/` 等目录。
 
 注意：早期 checkpoint 如果 workspace 是相对路径，可能会在 `checkpoint.json` 里看到 git snapshot error。这个错误不影响 `RECOVERY.md` 和 `checkpoint.json` 恢复。当前实现已改为对 git snapshot 使用绝对路径，后续新 checkpoint 会更稳定。
 
@@ -297,14 +297,14 @@ events.jsonl
 - `events.jsonl` 保存运行时 custom event 和 graph update。
 - strict resume 会优先尝试用 `state.json` 做 state-backed restart。如果文件不可读，会安全降级到 light resume。
 
-### .mokioclaw/shims/
+### .congclaw/shims/
 
 创建时机：第一次真正执行 `BashTool` 命令时。
 
 更准确地说，`BashTool` 通过危险命令检查和审批检查后，会构造执行环境。构造环境时会调用 `_ensure_toolchain_shims()`，创建：
 
 ```text
-.mokioclaw/shims/
+.congclaw/shims/
 ├─ python
 ├─ python3
 ├─ pip
@@ -313,7 +313,7 @@ events.jsonl
 
 用途：
 
-- 把 `python` 和 `python3` 固定指向当前运行 MokioClaw 的 Python。
+- 把 `python` 和 `python3` 固定指向当前运行 CongClaw 的 Python。
 - 把 `pip` 和 `pip3` 固定为 `python -m pip`，必要时自动 `ensurepip`。
 - 把 shims 目录放到 `PATH` 前面，减少系统 Python、conda Python、workspace venv 混用造成的漂移。
 
@@ -321,19 +321,19 @@ events.jsonl
 
 这个案例里 `shims` 存在，说明至少执行过一次 BashTool 验证命令。
 
-### .mokioclaw/bash-outputs/
+### .congclaw/bash-outputs/
 
 创建时机：第一次前台 `BashTool` 命令结束并格式化输出时。
 
 用途：
 
-- BashTool 会把 stdout/stderr 截断到 `MOKIO_BASH_MAX_OUTPUT_CHARS`。
+- BashTool 会把 stdout/stderr 截断到 `CONG_BASH_MAX_OUTPUT_CHARS`。
 - 如果输出超过限制，完整 stdout/stderr 会写到这里。
 - Tool result 中会返回 `stdout_path` 或 `stderr_path`，方便 Agent 和人类继续查看。
 
 这个案例里目录存在但为空，说明跑过 BashTool，但命令输出都比较短，没有触发长输出落盘。
 
-### .mokioclaw/background/
+### .congclaw/background/
 
 创建时机：`BashTool` 使用 `run_in_background=true` 启动长时服务时。
 
@@ -345,14 +345,14 @@ events.jsonl
 
 这个案例里没有该目录，说明没有启动后台服务。
 
-### .mokioclaw/traces/
+### .congclaw/traces/
 
 创建时机：`stream_agent_events()` 创建 `TraceRecorder` 后，第一次 `run_start` 写入时。
 
 默认 trace mode 是 `on`，每次运行会创建独立目录：
 
 ```text
-.mokioclaw/traces/
+.congclaw/traces/
 └─ trace-YYYYMMDD-HHMMSS-xxxxxx/
    ├─ events.jsonl
    ├─ summary.json
@@ -373,7 +373,7 @@ Trace 和 checkpoint 的区别：
 Trace 默认裁剪长 payload，避免把大段 tool output 或 graph state 全量写入日志。需要关闭时可以运行：
 
 ```bash
-uv run mokioclaw --trace-mode off "..."
+uv run congclaw --trace-mode off "..."
 ```
 
 ## light resume 怎么工作
@@ -384,7 +384,7 @@ light checkpoint 的恢复不是“回到某个 tool call 的下一行继续跑�
 
 ```mermaid
 flowchart LR
-    Resume["uv run mokioclaw --resume <workspace>"]
+    Resume["uv run congclaw --resume <workspace>"]
     Read["读取 RECOVERY.md / TODO.md / NOTEPAD.md / HISTORY_SUMMARY.md"]
     Task["构造 Continue task + context_summary"]
     Planner["从 planner 重新进入 workflow"]
@@ -430,7 +430,7 @@ flowchart LR
 
 ### Context Engineering
 
-MokioClaw 不把所有信息都塞进 messages，而是分层存放：
+CongClaw 不把所有信息都塞进 messages，而是分层存放：
 
 - rules：稳定规则和运行边界。
 - working memory：task、plan、todos、criteria、commands、sources、handoffs、last_error。
@@ -440,7 +440,7 @@ MokioClaw 不把所有信息都塞进 messages，而是分层存放：
 
 ### Harness Engineering
 
-MokioClaw 把 Agent 放进更可控的执行环境：
+CongClaw 把 Agent 放进更可控的执行环境：
 
 - BashTool 有危险命令拦截。
 - 高风险命令可以人类审批。
@@ -458,9 +458,9 @@ MokioClaw 把 Agent 放进更可控的执行环境：
 
 1. 先看 `TODO.md`，理解任务目标和验收标准。
 2. 再打开 `glm5.1_highspeed.html`，看实际交付物。
-3. 再看 `.mokioclaw/checkpoints/RECOVERY.md`，理解系统如何总结进度。
-4. 再看 `.mokioclaw/checkpoints/checkpoint.json`，理解程序恢复需要的结构化信息。
-5. 再看 `.mokioclaw/traces/trace-*/timeline.md`，理解这次运行的节点和工具链路。
-6. 最后看 `.mokioclaw/shims` 和 `.mokioclaw/bash-outputs`，理解 BashTool 的执行环境和输出管理。
+3. 再看 `.congclaw/checkpoints/RECOVERY.md`，理解系统如何总结进度。
+4. 再看 `.congclaw/checkpoints/checkpoint.json`，理解程序恢复需要的结构化信息。
+5. 再看 `.congclaw/traces/trace-*/timeline.md`，理解这次运行的节点和工具链路。
+6. 最后看 `.congclaw/shims` 和 `.congclaw/bash-outputs`，理解 BashTool 的执行环境和输出管理。
 
 这条路径基本对应了从“用户结果”到“Agent 运行机制”的逐层下钻。

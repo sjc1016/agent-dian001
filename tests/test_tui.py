@@ -6,12 +6,12 @@ from pathlib import Path
 from rich.text import Text
 from typer.testing import CliRunner
 
-from mokioclaw.cli.app import app
-from mokioclaw.cli.event_summary import summarize_event
-from mokioclaw.cli.tui import MokioClawTuiApp
-from mokioclaw.cli.tui.approval import ApprovalGate
-from mokioclaw.cli.tui.logo import render_logo
-from mokioclaw.core.approval import ApprovalRequest
+from congclaw.cli.app import app
+from congclaw.cli.event_summary import summarize_event
+from congclaw.cli.tui import CongClawTuiApp
+from congclaw.cli.tui.approval import ApprovalGate
+from congclaw.cli.tui.logo import render_logo
+from congclaw.core.approval import ApprovalRequest
 
 
 def test_tui_help_is_available() -> None:
@@ -34,7 +34,7 @@ def test_tui_options_are_accepted(monkeypatch) -> None:
         def run(self):
             return None
 
-    monkeypatch.setattr("mokioclaw.cli.tui.MokioClawTuiApp", FakeApp)
+    monkeypatch.setattr("congclaw.cli.tui.CongClawTuiApp", FakeApp)
 
     result = runner.invoke(
         app,
@@ -56,7 +56,7 @@ def test_natural_task_entry_still_works(monkeypatch, tmp_path) -> None:
         calls.append((args, kwargs))
         yield {"type": "workspace", "path": str(tmp_path)}
 
-    monkeypatch.setattr("mokioclaw.cli.app.stream_chat_events", fake_stream)
+    monkeypatch.setattr("congclaw.cli.app.stream_chat_events", fake_stream)
 
     result = runner.invoke(app, ["demo task"])
 
@@ -111,7 +111,7 @@ def test_tui_renders_fake_stream_events(tmp_path) -> None:
         }
 
     async def run() -> None:
-        app = MokioClawTuiApp(initial_task="demo task", stream_factory=fake_stream)
+        app = CongClawTuiApp(initial_task="demo task", stream_factory=fake_stream)
         async with app.run_test(size=(120, 36)) as pilot:
             # 等待后台事件流处理完成，避免依赖固定睡眠时长
             for _ in range(50):
@@ -141,7 +141,7 @@ def test_tui_renders_lightweight_chat_response() -> None:
         }
 
     async def run() -> None:
-        app = MokioClawTuiApp(initial_task="你好", stream_factory=fake_stream)
+        app = CongClawTuiApp(initial_task="你好", stream_factory=fake_stream)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(0.2)
             assert app.run_count == 1
@@ -160,7 +160,7 @@ def test_tui_chat_response_keeps_long_body_visible() -> None:
     )
 
     async def run() -> None:
-        app = MokioClawTuiApp(stream_factory=lambda *args, **kwargs: [])
+        app = CongClawTuiApp(stream_factory=lambda *args, **kwargs: [])
         async with app.run_test(size=(100, 30)) as pilot:
             app._handle_event(
                 {
@@ -182,7 +182,7 @@ def test_tui_chat_response_keeps_long_body_visible() -> None:
 
 def test_tui_hides_low_level_entry_graph_updates() -> None:
     async def run() -> None:
-        app = MokioClawTuiApp(stream_factory=lambda *args, **kwargs: [])
+        app = CongClawTuiApp(stream_factory=lambda *args, **kwargs: [])
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(0.1)
             before = len(app.query_one("#events").children)
@@ -201,7 +201,7 @@ def test_tui_hides_low_level_entry_graph_updates() -> None:
 
 def test_tui_input_bar_stays_visible() -> None:
     async def run() -> None:
-        app = MokioClawTuiApp(stream_factory=lambda *args, **kwargs: [])
+        app = CongClawTuiApp(stream_factory=lambda *args, **kwargs: [])
         async with app.run_test(size=(100, 28)) as pilot:
             await pilot.press("h", "e", "l", "l", "o")
             await pilot.pause(0.1)
@@ -215,7 +215,7 @@ def test_tui_input_bar_stays_visible() -> None:
 
 def test_tui_user_message_card_keeps_compact_height() -> None:
     async def run() -> None:
-        app = MokioClawTuiApp(stream_factory=lambda *args, **kwargs: [])
+        app = CongClawTuiApp(stream_factory=lambda *args, **kwargs: [])
         async with app.run_test(size=(100, 24)) as pilot:
             app._write_run_start("你好", None)
             await pilot.pause(0.1)
@@ -233,7 +233,7 @@ def test_tui_runs_multiple_tasks_in_same_session_workspace(tmp_path) -> None:
         yield {"type": "workspace", "path": str(kwargs["session_workspace"])}
 
     async def run() -> None:
-        app = MokioClawTuiApp(workspace=tmp_path / "session-workspace", stream_factory=fake_stream)
+        app = CongClawTuiApp(workspace=tmp_path / "session-workspace", stream_factory=fake_stream)
         async with app.run_test(size=(100, 30)) as pilot:
             app.start_task("first")
             await pilot.pause(0.2)
@@ -251,7 +251,7 @@ def test_tui_runs_multiple_tasks_in_same_session_workspace(tmp_path) -> None:
 
 def test_tui_new_session_command_switches_workspace(tmp_path) -> None:
     async def run() -> None:
-        app = MokioClawTuiApp(workspace=tmp_path / "first", stream_factory=lambda *args, **kwargs: [])
+        app = CongClawTuiApp(workspace=tmp_path / "first", stream_factory=lambda *args, **kwargs: [])
         async with app.run_test(size=(100, 30)) as pilot:
             old_workspace = app.session_workspace
             app.start_new_session()
