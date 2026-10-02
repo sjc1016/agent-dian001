@@ -26,13 +26,16 @@ NEW_SESSION_MARKER = "__new__"
 
 
 def _format_time(ts: str) -> str:
-    """将 ISO 时间戳压缩为 ``MM-DD HH:MM`` 展示。"""
+    """将 ISO 时间戳转换为本地时区，并压缩为 ``MM-DD HH:MM`` 展示。"""
     if not ts:
         return ""
     try:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return ts[:16]
+    if dt.tzinfo is not None:
+        # 后端统一存 UTC，展示前转成本地时区
+        dt = dt.astimezone()
     return dt.strftime("%m-%d %H:%M")
 
 
