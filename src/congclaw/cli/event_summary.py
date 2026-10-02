@@ -13,6 +13,10 @@ class EventSummary:
     style: str = "white"
 
 
+# 卡片展开正文的字符上限：需覆盖完整答复，仅在异常巨型载荷时兜底截断
+DETAIL_TEXT_LIMIT = 20000
+
+
 def shorten(value: Any, limit: int = 260) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     if len(text) <= limit:
@@ -190,7 +194,7 @@ def summarize_custom_event(event: dict[str, Any]) -> EventSummary:
             "trace",
             "green" if event.get("status") == "finished" else "yellow",
         )
-    return EventSummary(str(event_type), shorten(event, 1000), "event", "white")
+    return EventSummary(str(event_type), shorten(event, DETAIL_TEXT_LIMIT), "event", "white")
 
 
 def summarize_graph_event(payload: dict[str, Any]) -> EventSummary:
@@ -204,7 +208,7 @@ def summarize_graph_event(payload: dict[str, Any]) -> EventSummary:
         return _summarize_plan(update, "Planner")
     if node in {"actor", "codeAgent"}:
         summary = update.get("code_agent_summary") or update.get("last_actor_summary") or update
-        return EventSummary("codeAgent Summary", shorten(summary, 800), "agent", "cyan")
+        return EventSummary("codeAgent Summary", shorten(summary, DETAIL_TEXT_LIMIT), "agent", "cyan")
     if node == "verifier":
         return EventSummary("Verifier", _format_verifier(update), "verifier", "green" if update.get("passed") else "red")
     if node == "final":
@@ -215,7 +219,7 @@ def summarize_graph_event(payload: dict[str, Any]) -> EventSummary:
         return summarize_custom_event({"type": "context_compression", **update})
     if node == "memory_snapshot":
         return summarize_custom_event({"type": "memory_snapshot", **update})
-    return EventSummary(node, shorten(update, 800), "graph", "white")
+    return EventSummary(node, shorten(update, DETAIL_TEXT_LIMIT), "graph", "white")
 
 
 def _summarize_plan(update: dict[str, Any], title: str) -> EventSummary:

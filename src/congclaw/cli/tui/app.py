@@ -14,7 +14,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Collapsible, Footer, Header, Input, Static
 
-from congclaw.cli.event_summary import EventSummary, shorten, summarize_event
+from congclaw.cli.event_summary import DETAIL_TEXT_LIMIT, EventSummary, shorten, summarize_event
 from congclaw.cli.sse_client import DEFAULT_API_URL, stream_chat_events
 from congclaw.cli.tui.approval import ApprovalGate, ApprovalModal
 from congclaw.cli.tui.logo import render_logo
@@ -186,7 +186,6 @@ class CongClawTuiApp(App[None]):
 
     .detail {
         height: auto;
-        max-height: 12;
         color: #b7b0a8;
         padding: 0 1 1 1;
     }
@@ -696,13 +695,14 @@ class CongClawTuiApp(App[None]):
 
     def _detail_renderable(self, detail: str) -> Any:
         text = detail or "(no details)"
-        if len(text) > 1600:
-            text = text[:1597] + "..."
+        # 展开卡片需要看到完整内容：仅保留一个足够宽松的兜底上限，避免异常巨型载荷卡死界面
+        if len(text) > DETAIL_TEXT_LIMIT:
+            text = text[: DETAIL_TEXT_LIMIT - 3] + "..."
         try:
             parsed = json.loads(text)
         except (TypeError, json.JSONDecodeError):
             return Text(text)
-        return Pretty(parsed, max_depth=4)
+        return Pretty(parsed, max_depth=8)
 
     def _category_marker(self, category: str) -> str:
         return {
