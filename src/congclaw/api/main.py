@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from congclaw.api.routes.chat import router as chat_router
 from congclaw.api.routes.eval import router as eval_router
 from congclaw.api.routes.knowledge import router as knowledge_router
+from congclaw.api.routes.sessions import router as sessions_router
 from congclaw.api.routes.skills import router as skills_router
 from congclaw.db import init_db, resolve_db_path
 from congclaw.db.engine import dispose_engine
@@ -64,6 +65,7 @@ app.include_router(chat_router)
 app.include_router(knowledge_router)
 app.include_router(skills_router)
 app.include_router(eval_router)
+app.include_router(sessions_router)
 
 
 @app.get("/health", tags=["system"])

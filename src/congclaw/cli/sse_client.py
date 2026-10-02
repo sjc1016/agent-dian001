@@ -45,3 +45,13 @@ def stream_chat_events(
                 except json.JSONDecodeError:
                     # 忽略无法解析的帧
                     continue
+
+
+def fetch_sessions(api_url: str = DEFAULT_API_URL, limit: int = 100) -> list[dict[str, Any]]:
+    """调用 ``GET /api/v1/sessions`` 获取历史会话列表。"""
+    url = api_url.rstrip("/") + "/api/v1/sessions"
+    with httpx.Client(timeout=30.0) as client:
+        response = client.get(url, params={"limit": limit})
+        response.raise_for_status()
+        data = response.json()
+    return list(data.get("sessions", []))

@@ -11,6 +11,7 @@ from congclaw.cli.event_summary import summarize_event
 from congclaw.cli.tui import CongClawTuiApp
 from congclaw.cli.tui.approval import ApprovalGate
 from congclaw.cli.tui.logo import render_logo
+from congclaw.cli.tui.session_modal import NEW_SESSION_MARKER, SessionListModal
 from congclaw.core.approval import ApprovalRequest
 
 
@@ -268,3 +269,79 @@ def test_approval_gate_returns_decision() -> None:
     gate.resolve(True)
 
     assert gate.wait().approved is True
+
+
+def test_tui_switch_to_workspace_resets_state(tmp_path) -> None:
+    async def run() -> None:
+        app = CongClawTuiApp(workspace=tmp_path / "first", stream_factory=lambda *args, **kwargs: [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            target = tmp_path / "history-session"
+            app.switch_to_workspace(target)
+            await pilot.pause(0.1)
+            assert app.session_workspace == target
+            assert app.latest_workspace == str(target)
+            assert app.run_count == 0
+            assert app.session_turn == 0
+
+    asyncio.run(run())
+
+
+def test_session_modal_returns_selected_workspace(tmp_path) -> None:
+    sessions = [
+        {"session_id": "session-aaa", "workspace": str(tmp_path / "ws-a"), "turn_index": 3, "last_task": "查话费", "last_final_answer": "86元", "updated_at": "2026-10-02T08:00:00+00:00"},
+        {"session_id": "session-bbb", "workspace": str(tmp_path / "ws-b"), "turn_index": 1, "last_task": "办套餐", "last_final_answer": "已办理", "updated_at": "2026-10-01T08:00:00+00:00"},
+    ]
+
+    async def run() -> None:
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        class HostApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(
+                    SessionListModal(sessions=sessions, current_workspace=str(tmp_path / "ws-a")),
+                    callback=self._on_result,
+                )
+
+            def _on_result(self, result):
+                self._result = result
+
+        app = HostApp()
+        async with app.run_test(size=(90, 30)) as pilot:
+            await pilot.pause(0.5)
+            option_list = app.screen.query_one("#session-list", OptionList)
+            assert len(option_list.options) == 2
+            # 高亮第二项后回车，模拟用户选中历史会话
+            option_list.highlighted = 1
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+        assert app._result == str(tmp_path / "ws-b")
+
+    asyncio.run(run())
+
+
+def test_session_modal_new_session_button_returns_marker(tmp_path) -> None:
+    sessions = [{"session_id": "session-aaa", "workspace": str(tmp_path / "ws-a"), "turn_index": 1, "last_task": "x", "last_final_answer": "y", "updated_at": "2026-10-02T08:00:00+00:00"}]
+
+    async def run() -> None:
+        from textual.app import App
+
+        class HostApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(
+                    SessionListModal(sessions=sessions, current_workspace=""),
+                    callback=self._on_result,
+                )
+
+            def _on_result(self, result):
+                self._result = result
+
+        app = HostApp()
+        async with app.run_test(size=(90, 30)) as pilot:
+            await pilot.pause(0.3)
+            await pilot.press("n")
+            await pilot.pause(0.3)
+        assert app._result == NEW_SESSION_MARKER
+
+    asyncio.run(run())

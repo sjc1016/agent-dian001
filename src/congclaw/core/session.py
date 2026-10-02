@@ -55,6 +55,21 @@ def load_or_create_session(workspace: Path) -> dict[str, Any]:
     return _run(aload_or_create_session(workspace))
 
 
+async def alist_sessions(limit: int = 100) -> list[dict[str, Any]]:
+    """列出全部历史会话（按更新时间倒序），供 TUI/前端会话切换使用。"""
+    await _ensure_db()
+    async with session_scope() as session:
+        result = await session.execute(
+            select(SessionModel).order_by(SessionModel.updated_at.desc()).limit(limit)
+        )
+        rows = result.scalars().all()
+    return [_row_to_session_summary(row) for row in rows]
+
+
+def list_sessions(limit: int = 100) -> list[dict[str, Any]]:
+    return _run(alist_sessions(limit))
+
+
 def append_user_turn(session: dict[str, Any], content: str) -> int:
     turn = int(session.get("turn_index", 0)) + 1
     session["turn_index"] = turn
@@ -327,6 +342,21 @@ async def _upsert_session_row(workspace: str, data: dict[str, Any]) -> None:
             existing.clarify_count = int(data.get("clarify_count", 0) or 0)
             existing.unknown_count = int(data.get("unknown_count", 0) or 0)
             existing.updated_at = str(data.get("updated_at", utc_now()))
+
+
+def _row_to_session_summary(row: SessionModel) -> dict[str, Any]:
+    """会话列表项的轻量摘要（不含 recent_turns 全文，避免列表响应过大）。"""
+    return {
+        "session_id": row.session_id,
+        "workspace": row.workspace,
+        "turn_index": int(row.turn_index or 0),
+        "last_route": row.last_route or "",
+        "last_task": trim_text(str(row.last_task or ""), 120),
+        "last_final_answer": trim_text(str(row.last_final_answer or ""), 160),
+        "summary": trim_text(str(row.summary or ""), 300),
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
 
 
 def _row_to_session(row: SessionModel, workspace: Path) -> dict[str, Any]:

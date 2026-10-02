@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Iterable, Literal
@@ -17,8 +18,10 @@ from congclaw.cli.event_summary import EventSummary, shorten, summarize_event
 from congclaw.cli.sse_client import DEFAULT_API_URL, stream_chat_events
 from congclaw.cli.tui.approval import ApprovalGate, ApprovalModal
 from congclaw.cli.tui.logo import render_logo
+from congclaw.cli.tui.session_modal import NEW_SESSION_MARKER, SessionListModal
 from congclaw.core.approval import ApprovalDecision, ApprovalRequest
 from congclaw.core.paths import default_workspace
+from congclaw.db.engine import resolve_db_path
 
 
 StreamFactory = Callable[..., Iterable[dict[str, Any]]]
@@ -192,6 +195,7 @@ class CongClawTuiApp(App[None]):
     BINDINGS = [
         ("ctrl+c", "cancel_or_quit", "Cancel/Quit"),
         ("ctrl+l", "clear_events", "Clear"),
+        ("ctrl+s", "open_sessions", "Sessions"),
         ("ctrl+q", "quit", "Quit"),
     ]
 
@@ -261,7 +265,7 @@ class CongClawTuiApp(App[None]):
             with Horizontal(id="input-row"):
                 yield Static("❯", id="prompt")
                 yield Input(placeholder="Chat or ask for coding work, then press Enter", id="task-input")
-                yield Static("Enter send · /new session · Ctrl+L clear", id="hint")
+                yield Static("Enter send · /new · /sessions · Ctrl+S list · Ctrl+L clear", id="hint")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -280,6 +284,9 @@ class CongClawTuiApp(App[None]):
         event.input.value = ""
         if task == "/new":
             self.start_new_session()
+            return
+        if task == "/sessions":
+            self.action_open_sessions()
             return
         self.start_task(task, None)
 
@@ -307,6 +314,107 @@ class CongClawTuiApp(App[None]):
     def action_clear_events(self) -> None:
         self.query_one("#events", VerticalScroll).remove_children()
         self._write_welcome()
+
+    def action_open_sessions(self) -> None:
+        if self.running:
+            self.notify("任务执行中，无法切换会话。", severity="warning")
+            return
+        self.push_screen(
+            SessionListModal(current_workspace=str(self.session_workspace), api_url=self.api_url),
+            self._resolve_session_choice,
+        )
+
+    def _resolve_session_choice(self, result: str | None) -> None:
+        if result is None:
+            return
+        if result == NEW_SESSION_MARKER:
+            self.call_after_refresh(self.start_new_session)
+            return
+        # 延迟到模态框完全关闭、主屏幕恢复激活后再操作 DOM，避免 query_one 找不到元素
+        self.call_after_refresh(self.switch_to_workspace, result)
+
+    def switch_to_workspace(self, workspace: str | Path) -> None:
+        """切换到指定工作区（用于继续历史会话），并加载该会话的历史聊天记录。"""
+        if self.running:
+            self.notify("任务执行中，无法切换会话。", severity="warning")
+            return
+        path = Path(workspace)
+        self.workspace = path
+        self.session_workspace = path
+        self.resume = None
+        self.latest_workspace = str(path)
+        self.latest_checkpoint = ""
+        self.latest_trace = ""
+        self.session_id = ""
+        self.session_turn = 0
+        self.last_route = ""
+        self.todos = []
+        self.failed_tool_count = 0
+        self.tool_count = 0
+        self.approval_count = 0
+        self.run_count = 0
+        self._refresh_sidebar()
+        self.query_one("#events", VerticalScroll).remove_children()
+        self._mount_event_card(
+            "Switched Session",
+            str(path),
+            category="info",
+            collapsed=False,
+        )
+        # 加载历史会话的最近对话记录，让用户看到之前聊了什么
+        history = self._load_session_history(path)
+        if history:
+            self._mount_event_card(
+                f"History · {len(history)} turns",
+                "之前聊过的内容如下（仅展示最近记录）：",
+                category="info",
+                collapsed=False,
+            )
+            for turn in history:
+                role = str(turn.get("role", ""))
+                content = str(turn.get("content", ""))
+                if role == "user":
+                    self._mount_event_card(
+                        f"You · history",
+                        shorten(content, 500),
+                        category="user",
+                        collapsed=False,
+                    )
+                else:
+                    self._mount_event_card(
+                        "Assistant · history",
+                        shorten(content, 800),
+                        category="assistant",
+                        collapsed=False,
+                    )
+        self.query_one("#task-input", Input).focus()
+
+    def _load_session_history(self, workspace: Path) -> list[dict[str, Any]]:
+        """读取工作区会话的最近对话记录；读不到时返回空列表。
+
+        阶段 4 起会话数据持久化在 SQLite（``SessionModel.recent_turns`` 为 JSON 字符串），
+        工作区下不再有 ``session.json`` 文件。这里用标准库 ``sqlite3`` 同步直读，
+        避免在 TUI 事件循环里再启动 asyncio.run 导致冲突。
+        """
+        db_path = resolve_db_path()
+        if not db_path.exists():
+            return []
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT recent_turns FROM session WHERE workspace = ?",
+                    (str(workspace),),
+                )
+                row = cursor.fetchone()
+        except Exception:  # noqa: BLE001
+            return []
+        if not row or not row[0]:
+            return []
+        try:
+            turns = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [t for t in turns if isinstance(t, dict)] if isinstance(turns, list) else []
 
     def start_task(self, task: str, resume: Path | None = None) -> None:
         if self.running:
@@ -641,23 +749,15 @@ class CongClawTuiApp(App[None]):
         if self.running:
             self.notify("CongClaw is already running a task.", severity="warning")
             return
-        self.workspace = default_workspace()
-        self.session_workspace = self.workspace
-        self.resume = None
-        self.latest_workspace = str(self.session_workspace)
-        self.latest_checkpoint = ""
-        self.latest_trace = ""
-        self.session_id = ""
-        self.session_turn = 0
-        self.last_route = ""
-        self.todos = []
-        self.failed_tool_count = 0
-        self.tool_count = 0
-        self.approval_count = 0
-        self._refresh_sidebar()
+        new_workspace = default_workspace()
+        self.switch_to_workspace(new_workspace)
+        # 覆盖标题卡片，区分"新建"与"切换"
+        events = self.query_one("#events", VerticalScroll)
+        events.remove_children()
         self._mount_event_card(
             "New Session",
-            str(self.session_workspace),
+            str(new_workspace),
             category="info",
             collapsed=False,
         )
+        self._write_welcome()
