@@ -10,7 +10,9 @@
   6. 指代消解：多轮指代问题被正确重写并路由
   7. 评测流水线一键运行，输出含规则校验 + LLM-Judge 的报告
 
-用法：uv run python scripts/acceptance_check.py [--skip-eval]
+用法：uv run python scripts/acceptance_check.py [--skip-eval] [--keep]
+
+验收用随机工作区（项目根下的 acc-*）承载每次会话，跑完自动清理；需事后翻查时加 --keep。
 """
 
 from __future__ import annotations
@@ -18,13 +20,16 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 import time
 import uuid
+from pathlib import Path
 
 import httpx
 
 BASE = "http://127.0.0.1:8000"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESULTS: list[tuple[str, bool, str]] = []
 
 
@@ -310,9 +315,39 @@ def check_eval() -> None:
     record("7. 评测流水线一键运行出报告", ok, detail)
 
 
+# ---------------------------------------------------------------- 中间产物清理
+def acc_workspaces() -> set[str]:
+    """项目根下由本脚本创建的验收工作区目录名（acc-*）。"""
+    return {p.name for p in PROJECT_ROOT.glob("acc-*") if p.is_dir()}
+
+
+def cleanup_workspaces(before: set[str], keep: bool = False) -> None:
+    """清理本次验收新建的工作区。
+
+    随机工作区只是为了不污染历史会话，本身无需留存，默认跑完即删；
+    加 --keep 则保留，便于事后翻看会话与轨迹。
+    """
+    created = sorted(acc_workspaces() - before)
+    if keep:
+        if created:
+            print(f"\n[--keep] 保留本次验收工作区 {len(created)} 个：{', '.join(created)}")
+        return
+
+    removed = 0
+    for name in created:
+        try:
+            shutil.rmtree(PROJECT_ROOT / name)
+            removed += 1
+        except OSError as exc:  # noqa: BLE001 —— 清理失败不影响验收结论
+            print(f"清理工作区 {name} 失败: {exc}")
+    if created:
+        print(f"\n已清理本次验收中间产物：{removed}/{len(created)} 个工作区（加 --keep 可保留）")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-eval", action="store_true", help="跳过耗时的一键评测")
+    parser.add_argument("--keep", action="store_true", help="保留本次验收产生的工作区")
     args = parser.parse_args()
 
     try:
@@ -325,14 +360,19 @@ def main() -> int:
     print("总验收实测（对应 PRD 第 8 节）")
     print("=" * 70, flush=True)
 
-    check_four_businesses()
-    check_fallback()
-    check_rag()
-    check_agent_trace()
-    check_hotplug()
-    check_coreference()
-    if not args.skip_eval:
-        check_eval()
+    workspaces_before = acc_workspaces()
+    try:
+        check_four_businesses()
+        check_fallback()
+        check_rag()
+        check_agent_trace()
+        check_hotplug()
+        check_coreference()
+        if not args.skip_eval:
+            check_eval()
+    finally:
+        # 无论成功、失败还是中途 Ctrl+C，都清掉本次产生的中间工作区
+        cleanup_workspaces(workspaces_before, keep=args.keep)
 
     print("\n" + "=" * 70)
     passed = sum(1 for _, ok, _ in RESULTS if ok)

@@ -1,0 +1,77 @@
+%%{init: {'theme': 'base', 'themeVariables': {
+    'primaryColor': '#EAF2FC',
+    'primaryTextColor': '#0A3069',
+    'primaryBorderColor': '#0969DA',
+    'lineColor': '#8C959F',
+    'secondaryColor': '#F6F8FB',
+    'tertiaryColor': '#FFFFFF',
+    'fontFamily': 'PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif'
+}}}%%
+flowchart TD
+    START([START]):::neutral --> QR["query_rewrite<br/>查询改写"]:::primary
+    QR --> IR{"intent_router<br/>意图路由"}:::decision
+
+    subgraph RAG["rag_answer · RAG 快速检索子图"]
+        direction TB
+        B25["retrieve_bm25<br/>稀疏召回"]:::primary
+        DN["retrieve_dense<br/>稠密召回"]:::primary
+        RRF["rrf_fusion<br/>RRF 融合"]:::secondary
+        RK["rerank<br/>重排"]:::secondary
+        EG{"evidence_gate<br/>证据门控"}:::decision
+        PL["parent_lookup<br/>父块回填"]:::primary
+        RW["rewrite_once<br/>改写重试"]:::warn
+        GEN["generate<br/>生成答案"]:::primary
+        RF["rag_fallback<br/>兜底回答"]:::danger
+    end
+
+    subgraph AG["agent_loop · Agent 深度推理子图"]
+        direction TB
+        AE{"approval_entry<br/>审批入口"}:::decision
+        TH["think<br/>思考"]:::primary
+        AC["act<br/>行动"]:::primary
+        RE["reflect<br/>反思"]:::secondary
+        FI["finalize<br/>收尾"]:::neutral
+        AF["agent_fallback<br/>兜底"]:::danger
+    end
+
+    IR -->|"rag_query"| B25
+    IR -->|"rag_query"| DN
+    IR -->|"业务查询 / 业务办理"| AE
+    IR -->|"clarify / unknown"| CL["clarify<br/>澄清追问"]:::warn
+    IR -->|"irrelevant / 超限"| FB["fallback<br/>兜底收口"]:::danger
+
+    B25 --> RRF
+    DN --> RRF
+    RRF --> RK
+    RK --> EG
+    EG -->|"证据充足"| PL
+    EG -->|"证据不足"| RW
+    EG -->|"无证据"| RF
+    PL --> GEN
+    RW --> B25
+    RW --> DN
+
+    AE -->|"免审 / 已批准"| TH
+    AE -->|"跨轮已确认"| AC
+    AE -->|"用户取消"| FI
+    TH -->|"需调工具"| AC
+    TH -->|"可直接回答"| FI
+    AC -->|"需校验"| RE
+    AC -->|"任务完成"| FI
+    RE -->|"通过"| FI
+    RE -->|"重试"| TH
+    RE -->|"失败"| AF
+
+    GEN --> DONE([END]):::neutral
+    RF --> DONE
+    CL --> DONE
+    FB --> DONE
+    FI --> DONE
+    AF --> DONE
+
+    classDef primary fill:#EAF2FC,stroke:#0969DA,color:#0A3069
+    classDef secondary fill:#F3EDFC,stroke:#8250DF,color:#3B1D6E
+    classDef decision fill:#FFFFFF,stroke:#0969DA,color:#0A3069
+    classDef neutral fill:#FFFFFF,stroke:#D0D7DE,color:#1B1F24
+    classDef warn fill:#FFF8E6,stroke:#FAAD14,color:#7A4E00
+    classDef danger fill:#FDECEA,stroke:#CF222E,color:#7D1128

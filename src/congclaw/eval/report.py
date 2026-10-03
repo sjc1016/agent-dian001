@@ -3,14 +3,17 @@
 报告内容：
 - 概览：通过率、样本数、LLM-Judge 分项平均分
 - 规则校验结果表（每条样本）
-- LLM-Judge 打分表
+- 链路校验（trace 结构断言，独立于通过率）
+- 链路指标（数值观测值，独立于通过率）
 - 失败用例归因（含原始轨迹回链）
+- LLM-Judge 打分表
 - 输出到 ``eval/reports/`` 目录
 """
 
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,15 +22,19 @@ from typing import Any
 from congclaw.eval.llm_judge import JudgeScores
 from congclaw.eval.normalizer import EvalSample
 from congclaw.eval.rule_checks import RuleCheckReport
+from congclaw.eval.trace_checks import TraceCheckReport
+from congclaw.eval.trace_metrics import METRIC_LABELS, TraceMetrics, aggregate_metrics
 
 
 @dataclass
 class SampleEvalResult:
-    """单条样本的完整评测结果（规则 + LLM-Judge）。"""
+    """单条样本的完整评测结果（规则 + 链路断言 + 链路指标 + LLM-Judge）。"""
 
     sample: EvalSample
     rule_report: RuleCheckReport
     judge_scores: JudgeScores | None = None
+    trace_report: TraceCheckReport | None = None
+    metrics: TraceMetrics | None = None
 
 
 @dataclass
@@ -59,6 +66,45 @@ class EvalReport:
             "compliance": round(sum(r.judge_scores.compliance for r in judged) / n, 2),
             "average": round(sum(r.judge_scores.average for r in judged) / n, 2),
         }
+
+    @property
+    def trace_checked(self) -> list[SampleEvalResult]:
+        """链路断言适用的样本。"""
+        return [
+            r for r in self.results if r.trace_report is not None and r.trace_report.applicable
+        ]
+
+    @property
+    def trace_failures(self) -> list[SampleEvalResult]:
+        return [r for r in self.trace_checked if not r.trace_report.passed]
+
+    def trace_summary(self) -> dict[str, int]:
+        """链路校验汇总（独立口径，不影响 pass_rate）。"""
+        checked = self.trace_checked
+        return {
+            "total": self.total,
+            "applicable": len(checked),
+            "passed": len(checked) - len(self.trace_failures),
+            "failed": len(self.trace_failures),
+        }
+
+    def trace_assertion_failures(self) -> dict[str, int]:
+        """按断言名统计失败样本数，定位链路上最脆弱的一环。"""
+        counter: Counter[str] = Counter()
+        for result in self.trace_failures:
+            for failure in result.trace_report.failures:
+                counter[failure.name] += 1
+        return dict(counter.most_common())
+
+    def trace_metrics_summary(self) -> dict[str, dict[str, float]]:
+        """链路指标聚合（观测值口径，不做阈值判定、不影响 pass_rate）。
+
+        每项含 mean / min / max / n，其中 n 是该指标真正适用的样本数
+        （链路里没走到这一步的样本不计入），故不同指标的 n 可以不同。
+        """
+        return aggregate_metrics(
+            result.metrics for result in self.results if result.metrics is not None
+        )
 
 
 def render_markdown(report: EvalReport, *, reports_dir: str | Path = "eval/reports") -> str:
@@ -101,6 +147,12 @@ def render_markdown(report: EvalReport, *, reports_dir: str | Path = "eval/repor
             f"{mark(rule_map['clarify_rounds'].passed)} | {mark(r.rule_report.passed)} |"
         )
     lines.append("")
+
+    # 链路校验（独立口径，不并入通过率）
+    lines.extend(_render_trace_section(report))
+
+    # 链路指标（观测值，同样不并入通过率）
+    lines.extend(_render_metrics_section(report))
 
     # 失败用例归因
     if report.failures:
@@ -145,6 +197,62 @@ def render_markdown(report: EvalReport, *, reports_dir: str | Path = "eval/repor
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _render_trace_section(report: EvalReport) -> list[str]:
+    """渲染「链路校验」小节：结构断言与规则通过率各论各的。"""
+    summary = report.trace_summary()
+    lines = ["## 链路校验（trace 结构断言，不计入通过率）", ""]
+    lines.append(f"- 适用样本：{summary['applicable']} / {summary['total']}")
+    if not summary["applicable"]:
+        lines.append("- 本次评测没有可校验的 RAG / Agent 链路轨迹")
+        lines.append("")
+        return lines
+
+    lines.append(f"- 链路全部通过：{summary['passed']}")
+    lines.append(f"- 链路失败：{summary['failed']}")
+    lines.append("")
+    lines.append("| 样本 | 链路 | 失败断言 |")
+    lines.append("| --- | --- | --- |")
+    for result in report.trace_checked:
+        failed = result.trace_report.failures
+        detail = "；".join(f"`{item.name}`：{item.detail}" for item in failed) if failed else "-"
+        lines.append(f"| {result.sample.sample_id} | {'❌' if failed else '✅'} | {detail} |")
+    lines.append("")
+
+    assertion_failures = report.trace_assertion_failures()
+    if assertion_failures:
+        lines.append("### 断言失败分布")
+        lines.append("")
+        lines.append("| 断言 | 失败样本数 |")
+        lines.append("| --- | --- |")
+        for name, count in assertion_failures.items():
+            lines.append(f"| `{name}` | {count} |")
+        lines.append("")
+    return lines
+
+
+def _render_metrics_section(report: EvalReport) -> list[str]:
+    """渲染「链路指标」小节：只给观测值（均值/极值/样本数），不做阈值判定。"""
+    summary = report.trace_metrics_summary()
+    lines = ["## 链路指标（观测值，不做阈值判定、不计入通过率）", ""]
+    if not summary:
+        lines.append("- 本次评测没有可计算的链路指标（无 RAG / Agent 链路轨迹或缺少落盘 trace）")
+        lines.append("")
+        return lines
+
+    lines.append("| 指标 | 均值 | 最小 | 最大 | 样本数 |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for name, stat in summary.items():
+        lines.append(
+            f"| {METRIC_LABELS.get(name, name)} | {stat['mean']} | {stat['min']} | "
+            f"{stat['max']} | {stat['n']} |"
+        )
+    lines.append("")
+    lines.append("> 「样本数」是该指标真正适用的样本数（链路里没走到这一步的样本不计入），"
+                 "因此不同指标的样本数可以不同；耗时类指标依赖落盘 trace，缺失即不统计。")
+    lines.append("")
+    return lines
+
+
 def write_report(report: EvalReport, reports_dir: str | Path = "eval/reports") -> Path:
     """把报告写入 eval/reports/{report_id}.md 与同名 .json。"""
     out_dir = Path(reports_dir)
@@ -161,6 +269,9 @@ def write_report(report: EvalReport, reports_dir: str | Path = "eval/reports") -
         "passed": report.passed,
         "pass_rate": report.pass_rate,
         "average_scores": report.average_scores(),
+        "trace_summary": report.trace_summary(),
+        "trace_assertion_failures": report.trace_assertion_failures(),
+        "trace_metrics": report.trace_metrics_summary(),
         "samples": [
             {
                 "sample_id": r.sample.sample_id,
@@ -184,6 +295,19 @@ def write_report(report: EvalReport, reports_dir: str | Path = "eval/reports") -
                 ),
                 "trace_id": r.sample.trace_id,
                 "events_file": r.sample.events_file,
+                "trace": (
+                    {
+                        "applicable": r.trace_report.applicable,
+                        "passed": r.trace_report.passed,
+                        "failures": [
+                            {"name": f.name, "title": f.title, "detail": f.detail}
+                            for f in r.trace_report.failures
+                        ],
+                    }
+                    if r.trace_report
+                    else None
+                ),
+                "metrics": r.metrics.to_dict() if r.metrics else None,
             }
             for r in report.results
         ],

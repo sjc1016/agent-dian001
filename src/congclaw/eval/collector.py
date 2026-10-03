@@ -27,12 +27,19 @@ class SessionTrace:
     # 关键事件按类型索引（取最后一次，评测以最终状态为准）
     intent_decision: dict[str, Any] | None = None
     clarify_questions: list[dict[str, Any]] = field(default_factory=list)
+    query_rewrite: dict[str, Any] | None = None
     fallback: dict[str, Any] | None = None
+    rag_start: dict[str, Any] | None = None
     rag_retrieves: list[dict[str, Any]] = field(default_factory=list)
+    rag_fusion: dict[str, Any] | None = None
     rag_rerank: dict[str, Any] | None = None
     rag_gate: dict[str, Any] | None = None
+    rag_rewrite: dict[str, Any] | None = None
+    rag_parent_lookup: dict[str, Any] | None = None
     rag_answer: dict[str, Any] | None = None
     rag_fallback: dict[str, Any] | None = None
+    rag_finished: dict[str, Any] | None = None
+    agent_start: dict[str, Any] | None = None
     agent_thinking: dict[str, Any] | None = None
     skill_calls: list[dict[str, Any]] = field(default_factory=list)
     skill_results: list[dict[str, Any]] = field(default_factory=list)
@@ -40,6 +47,7 @@ class SessionTrace:
     agent_answer: dict[str, Any] | None = None
     agent_fallback: dict[str, Any] | None = None
     confirm_required: dict[str, Any] | None = None
+    session_turn_saved: dict[str, Any] | None = None
     final_answer: str = ""
 
     @property
@@ -128,18 +136,32 @@ def _classify(trace: SessionTrace, record: dict[str, Any]) -> None:
         trace.intent_decision = payload
     elif event_type == "clarify_question":
         trace.clarify_questions.append(payload)
+    elif event_type == "query_rewrite":
+        trace.query_rewrite = payload
     elif event_type == "fallback_reply":
         trace.fallback = payload
+    elif event_type == "rag_start":
+        trace.rag_start = payload
     elif event_type == "rag_retrieve":
         trace.rag_retrieves.append(payload)
+    elif event_type == "rag_fusion":
+        trace.rag_fusion = payload
     elif event_type == "rag_rerank":
         trace.rag_rerank = payload
     elif event_type == "rag_gate":
         trace.rag_gate = payload
+    elif event_type == "rag_rewrite":
+        trace.rag_rewrite = payload
+    elif event_type == "rag_parent_lookup":
+        trace.rag_parent_lookup = payload
     elif event_type == "rag_answer":
         trace.rag_answer = payload
     elif event_type == "rag_fallback":
         trace.rag_fallback = payload
+    elif event_type == "rag_finished":
+        trace.rag_finished = payload
+    elif event_type == "agent_start":
+        trace.agent_start = payload
     elif event_type == "agent_thinking":
         trace.agent_thinking = payload
     elif event_type == "skill_call":
@@ -154,6 +176,8 @@ def _classify(trace: SessionTrace, record: dict[str, Any]) -> None:
         trace.agent_fallback = payload
     elif event_type == "agent_confirm_required":
         trace.confirm_required = payload
+    elif event_type == "session_turn_saved":
+        trace.session_turn_saved = payload
 
 
 def _extract_final_answer(trace: SessionTrace) -> str:

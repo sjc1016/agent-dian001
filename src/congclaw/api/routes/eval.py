@@ -52,6 +52,7 @@ async def run_eval(request: EvalRunRequest) -> dict[str, Any]:
         "passed": report.passed,
         "pass_rate": report.pass_rate,
         "average_scores": report.average_scores(),
+        "trace_summary": report.trace_summary(),
         "report_path": str(REPORTS_DIR / f"{report.report_id}.md"),
     }
 

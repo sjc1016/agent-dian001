@@ -1,6 +1,6 @@
 """阶段 6 评测流水线运行器。
 
-串联 collector → normalizer → rule_checks → llm_judge → report。
+串联 collector → normalizer → rule_checks → trace_checks → llm_judge → report。
 
 - :func:`run_evaluation`：一键跑完整评测集，生成报告
 - :func:`run_single_sample`：跑单条样本（供 API 与调试用）
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,45 @@ from congclaw.eval.report import (
     write_report,
 )
 from congclaw.eval.rule_checks import run_rule_checks
+from congclaw.eval.trace_checks import run_trace_checks
+from congclaw.eval.trace_metrics import compute_metrics
+
+WORKSPACE_KEEP = 3  # 评测临时工作区保留最近 N 次，更早的自动清理
+
+
+def prune_eval_workspaces(
+    keep: int = WORKSPACE_KEEP,
+    temp_root: str | Path | None = None,
+) -> list[Path]:
+    """清理历史评测临时工作区，只保留最近 keep 个（含本次）。
+
+    报告的「轨迹回链」指向这些目录里的 events.jsonl，因此保留最近若干次而非跑完即删；
+    更早的目录连同临时空间一并回收，避免每次评测都留下一批无人清理的目录。
+    """
+    root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir())
+    if not root.is_dir():
+        return []
+
+    candidates: list[tuple[float, Path]] = []
+    for path in root.glob("mokio-eval-*"):
+        if not path.is_dir():
+            continue
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    if len(candidates) <= keep:
+        return []
+
+    candidates.sort(reverse=True)
+    removed: list[Path] = []
+    for _, path in candidates[keep:]:
+        try:
+            shutil.rmtree(path)
+        except OSError:  # 目录被占用或权限不足时跳过，不影响评测结果
+            continue
+        removed.append(path)
+    return removed
 
 
 async def run_evaluation(
@@ -43,6 +83,7 @@ async def run_evaluation(
     - reports_dir: 报告输出目录
     - dataset: 自定义评测集，默认使用内置 30 条
     - base_workspace: 评测用工作区根目录，默认系统临时目录
+      （临时目录场景下只保留最近 :data:`WORKSPACE_KEEP` 次，更早的自动清理）
     """
     samples = dataset if dataset is not None else get_dataset()
     base = Path(base_workspace) if base_workspace else Path(tempfile.mkdtemp(prefix="mokio-eval-"))
@@ -89,6 +130,7 @@ async def run_evaluation(
             )
 
     write_report(report, reports_dir=reports_dir)
+    prune_eval_workspaces()
     return report
 
 
@@ -98,7 +140,7 @@ async def run_single_sample(
     workspace: str | Path,
     use_llm_judge: bool = True,
 ) -> SampleEvalResult:
-    """跑单条样本：调用对话 → 采集轨迹 → 归一化 → 规则校验 → LLM-Judge。"""
+    """跑单条样本：调用对话 → 采集轨迹 → 归一化 → 规则校验 → 链路断言 → LLM-Judge。"""
     ws = Path(workspace)
     ws.mkdir(parents=True, exist_ok=True)
 
@@ -120,6 +162,8 @@ async def run_single_sample(
 
     sample = normalize(trace, labeled)
     rule_report = run_rule_checks(sample)
+    trace_report = run_trace_checks(trace)
+    metrics = compute_metrics(trace)
 
     judge_scores = None
     if use_llm_judge:
@@ -129,6 +173,8 @@ async def run_single_sample(
         sample=sample,
         rule_report=rule_report,
         judge_scores=judge_scores,
+        trace_report=trace_report,
+        metrics=metrics,
     )
 
 

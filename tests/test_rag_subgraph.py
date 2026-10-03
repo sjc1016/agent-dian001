@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,6 +18,7 @@ from langchain_core.messages import AIMessage
 from congclaw.db import init_db
 from congclaw.graph.workflow import build_entry_workflow
 from congclaw.prompts.rag import RAG_FALLBACK_REPLY
+from congclaw.rag import config as rag_config
 from congclaw.rag import nodes as rag_nodes
 from congclaw.rag.store import ChunkRow, fetch_parent_groups, replace_doc_chunks
 from congclaw.rag.workflow import build_rag_subgraph
@@ -489,3 +492,35 @@ def test_main_graph_rag_query_routes_into_rag_subgraph(monkeypatch, tmp_path) ->
     assert "rag_answer" in rag_event_types
     assert rag_event_types[0] == "rag_start"
     assert rag_event_types[-1] == "rag_finished"
+
+
+# ---------------------------------------------------------------------------
+# Milvus 路径：盘符映射丢失时的自愈
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_milvus_db_path_noop_when_drive_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """目标盘符可用时原样返回，不做任何映射动作。"""
+    target = tmp_path / "milvus_lite.db"
+    monkeypatch.setattr(rag_config, "milvus_db_path", lambda: target)
+    calls: list[Any] = []
+    monkeypatch.setattr(rag_config.subprocess, "run", lambda *a, **k: calls.append(a))
+
+    assert rag_config.ensure_milvus_db_path() == target
+    assert calls == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="subst 为 Windows 专有命令")
+def test_ensure_milvus_db_path_rebuilds_missing_drive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """盘符缺失（映射随重启丢失）时自动重建，指向项目 data 目录。"""
+    free = next((f"{c}:" for c in "QWVUTSRPONMLK" if not Path(f"{c}\\").exists()), None)
+    if free is None:
+        pytest.skip("没有空闲盘符可用于测试")
+
+    target = Path(f"{free}/milvus_lite.db")
+    monkeypatch.setattr(rag_config, "milvus_db_path", lambda: target)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(rag_config.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+
+    assert rag_config.ensure_milvus_db_path() == target
+    assert calls and calls[0][0] == "subst" and calls[0][1] == free

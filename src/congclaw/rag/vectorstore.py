@@ -32,7 +32,7 @@ class ChunkVectorStore:
                 if self._client is None:
                     from pymilvus import DataType, MilvusClient
 
-                    db_path = config.milvus_db_path()
+                    db_path = config.ensure_milvus_db_path()
                     db_path.parent.mkdir(parents=True, exist_ok=True)
                     client = MilvusClient(uri=str(db_path))
                     if client.has_collection(config.COLLECTION_NAME):

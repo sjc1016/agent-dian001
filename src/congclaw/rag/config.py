@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -51,6 +52,28 @@ def _resolve(raw: str, default: Path) -> Path:
 def milvus_db_path() -> Path:
     load_dotenv()
     return _resolve(os.getenv("MILVUS_DB_PATH", "").strip(), DEFAULT_MILVUS_PATH)
+
+
+def ensure_milvus_db_path() -> Path:
+    """返回 Milvus 数据路径；盘符映射丢失时按需重建。
+
+    Milvus Lite 的 faiss 后端在 Windows 上读不了非 ASCII 路径，索引加载会失败并
+    退化为 brute-force（再撞上 ``allow_pickle`` 报错），表现为 dense 召回静默为空。
+    因此 ``MILVUS_DB_PATH`` 常配成 ``Z:\\milvus_lite.db`` 这类盘符映射。
+
+    ``subst`` 映射只在当前登录会话内有效，重启/注销后丢失——此时应用会静默降级为
+    BM25 单路。这里在首次访问向量库时自动补建映射（指向项目 ``data`` 目录），
+    使映射丢失后自愈，无需人工干预。
+    """
+    path = milvus_db_path()
+    drive = path.drive
+    if os.name != "nt" or not drive or Path(f"{drive}\\").exists():
+        return path
+
+    target = find_project_root() / "data"
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["subst", drive, str(target)], capture_output=True, text=True)
+    return path
 
 
 def embed_model_dir() -> Path:

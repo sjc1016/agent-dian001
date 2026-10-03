@@ -15,6 +15,8 @@ from congclaw.eval.llm_judge import JudgeScores, _fallback_scores, judge_answer
 from congclaw.eval.normalizer import EvalSample, normalize
 from congclaw.eval.report import EvalReport, SampleEvalResult, render_markdown, write_report
 from congclaw.eval.rule_checks import run_rule_checks
+from congclaw.eval.trace_checks import TraceAssertion, TraceCheckReport, run_trace_checks
+from congclaw.eval.trace_metrics import compute_metrics
 
 
 def _make_events() -> list[dict]:
@@ -70,7 +72,64 @@ def test_collect_from_events_parses_agent_trace() -> None:
     assert trace.skill_calls[0]["name"] == "query_balance"
     assert trace.agent_reflect is not None
     assert trace.agent_reflect["decision"] == "pass"
+    assert trace.agent_start is not None
+    assert trace.session_turn_saved is not None
     assert "86.50" in trace.final_answer
+
+
+def test_collect_from_events_indexes_rag_lifecycle() -> None:
+    """RAG 链路中段事件（重写/启动/融合/回溯/结束）都要被索引。"""
+    events = [
+        {"type": "query_rewrite", "changed": True, "original": "它的月费是多少", "rewritten": "5G畅享199元档月费"},
+        {"type": "intent_decision", "category": "rag_query", "route": "rag_answer", "confidence": 0.9},
+        {"type": "rag_start", "query": "5G畅享套餐包含多少流量"},
+        {"type": "rag_retrieve", "channel": "bm25", "count": 5},
+        {"type": "rag_retrieve", "channel": "dense", "count": 5},
+        {"type": "rag_fusion", "count": 7},
+        {"type": "rag_rerank", "count": 3},
+        {"type": "rag_gate", "decision": "parent_lookup", "reason": "evidence_hit"},
+        {"type": "rag_parent_lookup", "parent_count": 2},
+        {"type": "rag_answer", "answer_preview": "199 元档含 100GB 流量[1]。"},
+        {"type": "rag_finished", "answer_chars": 24},
+        {"type": "session_turn_saved", "turn": 1, "route": "rag_answer"},
+    ]
+    trace = collect_from_events(events)
+
+    assert trace.query_rewrite is not None
+    assert trace.query_rewrite["changed"] is True
+    assert trace.rag_start is not None
+    assert {e["channel"] for e in trace.rag_retrieves} == {"bm25", "dense"}
+    assert trace.rag_fusion is not None
+    assert trace.rag_parent_lookup is not None
+    assert trace.rag_parent_lookup["parent_count"] == 2
+    assert trace.rag_finished is not None
+    assert trace.session_turn_saved is not None
+
+
+def test_collect_from_events_indexes_rag_rewrite_branch() -> None:
+    """重写分支：rag_rewrite 被索引，单例事件按「取最后一次」覆盖。"""
+    events = [
+        {"type": "rag_start", "query": "那个多少钱"},
+        {"type": "rag_retrieve", "channel": "bm25", "count": 0},
+        {"type": "rag_fusion", "count": 0},
+        {"type": "rag_rerank", "count": 0},
+        {"type": "rag_gate", "decision": "rewrite", "reason": "no_evidence"},
+        {"type": "rag_rewrite", "original_query": "那个多少钱", "rewritten_query": "199元5G套餐多少钱"},
+        {"type": "rag_retrieve", "channel": "bm25", "count": 3},
+        {"type": "rag_fusion", "count": 3},
+        {"type": "rag_rerank", "count": 2},
+        {"type": "rag_gate", "decision": "parent_lookup", "reason": "evidence_hit"},
+        {"type": "rag_parent_lookup", "parent_count": 1},
+        {"type": "rag_answer", "answer_preview": "199 元档月费 199 元[1]。"},
+        {"type": "rag_finished", "answer_chars": 20},
+    ]
+    trace = collect_from_events(events)
+
+    assert trace.rag_rewrite is not None
+    assert trace.rag_rewrite["rewritten_query"] == "199元5G套餐多少钱"
+    assert len(trace.rag_retrieves) == 2
+    assert trace.rag_fusion["count"] == 3
+    assert trace.rag_gate["decision"] == "parent_lookup"
 
 
 def test_collect_from_trace_dir_reads_jsonl(tmp_path: Path) -> None:
@@ -292,6 +351,219 @@ def test_rule_checks_tool_param_missing_required_detected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# trace_checks：RAG 链路结构断言
+# ---------------------------------------------------------------------------
+
+
+def _rag_hit_events() -> list[dict]:
+    """命中路径：双路召回 → 融合 → 精排 → parent_lookup → 生成。"""
+    return [
+        {"type": "query_rewrite", "changed": False, "original": "套餐流量", "rewritten": "套餐流量"},
+        {"type": "intent_decision", "route": "rag_answer", "category": "rag_query", "confidence": 0.92},
+        {"type": "rag_start", "query": "5G畅享套餐包含多少流量"},
+        {"type": "rag_retrieve", "channel": "bm25", "count": 5, "attempt": 0},
+        {"type": "rag_retrieve", "channel": "dense", "count": 5, "attempt": 0},
+        {"type": "rag_fusion", "bm25_count": 5, "dense_count": 5, "fused_count": 7},
+        {"type": "rag_rerank", "count": 3},
+        {"type": "rag_gate", "decision": "parent_lookup", "reason": "evidence_hit", "attempts": 0},
+        {"type": "rag_parent_lookup", "parent_count": 2},
+        {"type": "rag_answer", "sources_count": 2, "answer_preview": "199 元档含 100GB 流量[1]。"},
+        {"type": "rag_finished", "has_answer": True, "sources_count": 2, "rag_attempts": 0},
+    ]
+
+
+def _rag_rewrite_events() -> list[dict]:
+    """重写路径：首轮无证据 → rewrite → 重新召回并命中。"""
+    return [
+        {"type": "intent_decision", "route": "rag_answer", "category": "rag_query", "confidence": 0.8},
+        {"type": "rag_start", "query": "那个多少钱"},
+        {"type": "rag_retrieve", "channel": "bm25", "count": 0, "attempt": 0},
+        {"type": "rag_retrieve", "channel": "dense", "count": 0, "attempt": 0},
+        {"type": "rag_fusion", "bm25_count": 0, "dense_count": 0, "fused_count": 0},
+        {"type": "rag_rerank", "count": 0},
+        {"type": "rag_gate", "decision": "rewrite", "reason": "no_evidence", "attempts": 0},
+        {"type": "rag_rewrite", "original_query": "那个多少钱", "rewritten_query": "199元5G套餐多少钱", "attempts": 1},
+        {"type": "rag_retrieve", "channel": "bm25", "count": 3, "attempt": 1},
+        {"type": "rag_retrieve", "channel": "dense", "count": 2, "attempt": 1},
+        {"type": "rag_fusion", "bm25_count": 3, "dense_count": 2, "fused_count": 4},
+        {"type": "rag_rerank", "count": 2},
+        {"type": "rag_gate", "decision": "parent_lookup", "reason": "evidence_hit", "attempts": 1},
+        {"type": "rag_parent_lookup", "parent_count": 1},
+        {"type": "rag_answer", "sources_count": 1, "answer_preview": "199 元[1]。"},
+        {"type": "rag_finished", "has_answer": True, "sources_count": 1, "rag_attempts": 1},
+    ]
+
+
+def _rag_fallback_events() -> list[dict]:
+    """兜底路径：重写后仍无证据 → fallback。"""
+    events = _rag_rewrite_events()
+    terminal = [
+        {"type": "rag_gate", "decision": "fallback", "reason": "no_evidence_after_rewrite", "attempts": 1},
+        {"type": "rag_fallback", "reason": "rag_no_evidence", "attempts": 1},
+        {"type": "rag_finished", "has_answer": False, "sources_count": 0, "rag_attempts": 1},
+    ]
+    return events[:12] + terminal
+
+
+def _assertion(report: TraceCheckReport, name: str) -> TraceAssertion:
+    return next(item for item in report.assertions if item.name == name)
+
+
+def test_trace_checks_pass_on_hit_path() -> None:
+    report = run_trace_checks(collect_from_events(_rag_hit_events()))
+    assert report.applicable
+    assert report.passed, report.failures
+
+
+def test_trace_checks_pass_on_rewrite_path() -> None:
+    report = run_trace_checks(collect_from_events(_rag_rewrite_events()))
+    assert report.applicable
+    assert report.passed, report.failures
+
+
+def test_trace_checks_pass_on_fallback_path() -> None:
+    report = run_trace_checks(collect_from_events(_rag_fallback_events()))
+    assert report.applicable
+    assert report.passed, report.failures
+
+
+def test_trace_checks_skip_plain_trace() -> None:
+    """既不走 RAG 也不走 Agent（如 clarify）的轨迹不适用链路断言。"""
+    events = [
+        {"type": "intent_decision", "route": "clarify", "category": "clarify", "confidence": 0.4},
+        {"type": "clarify_question", "question": "请问您是想查询话费还是办理套餐？"},
+    ]
+    report = run_trace_checks(collect_from_events(events))
+    assert not report.applicable
+    assert report.assertions == []
+
+
+def test_trace_checks_pass_on_agent_path() -> None:
+    """agent_service 轨迹只跑 Agent 侧断言，不掺入 RAG 断言。"""
+    report = run_trace_checks(collect_from_events(_make_events()))
+    assert report.applicable
+    assert {item.name for item in report.assertions} == {
+        "agent_trigger",
+        "agent_call_pairing",
+        "agent_terminal",
+        "agent_confirm_isolation",
+        "agent_reflect_consistency",
+    }
+    assert report.passed, report.failures
+
+
+def test_trace_checks_detect_agent_routing_mismatch() -> None:
+    events = _make_events()
+    events[4] = {"type": "intent_decision", "route": "clarify", "category": "clarify"}
+    report = run_trace_checks(collect_from_events(events))
+    assert not _assertion(report, "agent_trigger").passed
+
+
+def test_trace_checks_detect_unpaired_skill_result() -> None:
+    events = [e for e in _make_events() if e.get("type") != "skill_result"]
+    report = run_trace_checks(collect_from_events(events))
+    pairing = _assertion(report, "agent_call_pairing")
+    assert not pairing.passed
+    assert "未产出结果" in pairing.detail
+
+
+def test_trace_checks_detect_agent_answer_and_fallback_conflict() -> None:
+    events = _make_events()
+    events.insert(11, {"type": "agent_fallback", "reason": "attempts_exceeded"})
+    report = run_trace_checks(collect_from_events(events))
+    assert not _assertion(report, "agent_terminal").passed
+
+
+def test_trace_checks_detect_confirm_card_leaked_execution() -> None:
+    """写操作既弹了确认卡片又执行了，属于审批短路失效。"""
+    events = _make_events()
+    events.insert(
+        6,
+        {"type": "agent_confirm_required", "approval_id": "ap-1", "skill_name": "query_balance"},
+    )
+    report = run_trace_checks(collect_from_events(events))
+    isolation = _assertion(report, "agent_confirm_isolation")
+    assert not isolation.passed
+    assert "仍执行" in isolation.detail
+
+
+def test_trace_checks_detect_reflect_pass_with_failed_tool() -> None:
+    events = _make_events()
+    events[8] = {"type": "skill_result", "name": "query_balance", "call_id": "c1", "ok": False}
+    report = run_trace_checks(collect_from_events(events))
+    consistency = _assertion(report, "agent_reflect_consistency")
+    assert not consistency.passed
+    assert "却放行" in consistency.detail
+
+
+def test_trace_checks_detect_retry_without_reinvoke() -> None:
+    events = _make_events()
+    events[9] = {"type": "agent_reflect", "decision": "retry", "reason": "try again"}
+    report = run_trace_checks(collect_from_events(events))
+    consistency = _assertion(report, "agent_reflect_consistency")
+    assert not consistency.passed
+    assert "未重新调用" in consistency.detail
+
+
+def test_trace_checks_detect_agent_fallback_without_fallback_event() -> None:
+    events = _make_events()
+    events[9] = {"type": "agent_reflect", "decision": "fallback", "reason": "hard failure"}
+    report = run_trace_checks(collect_from_events(events))
+    consistency = _assertion(report, "agent_reflect_consistency")
+    assert not consistency.passed
+    assert "未走兜底" in consistency.detail
+
+
+def test_trace_checks_detect_routing_mismatch() -> None:
+    events = _rag_hit_events()
+    events[1] = {"type": "intent_decision", "route": "agent_loop", "category": "agent_service"}
+    report = run_trace_checks(collect_from_events(events))
+    assert not _assertion(report, "rag_trigger").passed
+    assert not report.passed
+
+
+def test_trace_checks_detect_missing_recall_channel() -> None:
+    events = [e for e in _rag_hit_events() if e.get("channel") != "dense"]
+    report = run_trace_checks(collect_from_events(events))
+    assert not _assertion(report, "rag_dual_recall").passed
+    assert not _assertion(report, "rag_recall_pairing").passed
+    assert not _assertion(report, "rag_stage_alignment").passed
+
+
+def test_trace_checks_detect_stage_disorder() -> None:
+    events = _rag_hit_events()
+    fusion = events.pop(5)
+    events.insert(2, fusion)
+    report = run_trace_checks(collect_from_events(events))
+    assert not _assertion(report, "rag_stage_order").passed
+    assert "逆序" in _assertion(report, "rag_stage_order").detail
+
+
+def test_trace_checks_detect_invalid_gate_decision() -> None:
+    events = _rag_hit_events()
+    events[7] = {"type": "rag_gate", "decision": "直接回答", "attempts": 0}
+    report = run_trace_checks(collect_from_events(events))
+    assert not _assertion(report, "rag_gate_decision").passed
+
+
+def test_trace_checks_detect_rewrite_without_rerun() -> None:
+    events = _rag_rewrite_events()
+    gate_index = next(i for i, e in enumerate(events) if e.get("decision") == "rewrite")
+    events.insert(gate_index + 1, {"type": "rag_rewrite", "attempts": 1})
+    report = run_trace_checks(collect_from_events(events))
+    rewrite = _assertion(report, "rag_rewrite_rerun")
+    assert not rewrite.passed
+    assert "超出上限" in rewrite.detail
+
+
+def test_trace_checks_detect_answer_and_fallback_conflict() -> None:
+    events = _rag_hit_events()
+    events.insert(9, {"type": "rag_fallback", "reason": "rag_no_evidence", "attempts": 0})
+    report = run_trace_checks(collect_from_events(events))
+    assert not _assertion(report, "rag_terminal_consistency").passed
+
+
+# ---------------------------------------------------------------------------
 # llm_judge（退化路径，不依赖真实 LLM）
 # ---------------------------------------------------------------------------
 
@@ -366,7 +638,10 @@ def test_write_report_creates_md_and_json(tmp_path: Path) -> None:
     trace = collect_from_events(_make_events())
     sample = normalize(trace, LABELED_BALANCE)
     rule_report = run_rule_checks(sample)
-    result = SampleEvalResult(sample=sample, rule_report=rule_report)
+    trace_report = run_trace_checks(trace)
+    result = SampleEvalResult(
+        sample=sample, rule_report=rule_report, trace_report=trace_report
+    )
     report = EvalReport(
         report_id="eval-write",
         created_at="2026-01-01T00:00:00Z",
@@ -381,6 +656,55 @@ def test_write_report_creates_md_and_json(tmp_path: Path) -> None:
     data = json.loads((out / "eval-write.json").read_text(encoding="utf-8"))
     assert data["report_id"] == "eval-write"
     assert data["pass_rate"] == 100.0
+    assert data["trace_summary"] == {"total": 1, "applicable": 1, "passed": 1, "failed": 0}
+    assert data["samples"][0]["trace"]["passed"] is True
+
+
+def test_report_trace_section_is_independent_of_pass_rate() -> None:
+    """链路断言失败只体现在链路校验小节，不拉低规则通过率。"""
+    trace = collect_from_events(_make_events())
+    sample = normalize(trace, LABELED_BALANCE)
+    rule_report = run_rule_checks(sample)
+    assert rule_report.passed
+
+    broken = [e for e in _make_events() if e.get("type") != "skill_result"]
+    trace_report = run_trace_checks(collect_from_events(broken))
+    assert not trace_report.passed
+
+    report = EvalReport(
+        report_id="eval-trace",
+        created_at="2026-01-01T00:00:00Z",
+        total=1,
+        passed=1,  # 规则口径仍然通过
+        results=[
+            SampleEvalResult(
+                sample=sample, rule_report=rule_report, trace_report=trace_report
+            )
+        ],
+    )
+    md = render_markdown(report)
+    assert report.pass_rate == 100.0
+    assert "100.0%" in md
+    assert "## 链路校验（trace 结构断言，不计入通过率）" in md
+    assert "`agent_call_pairing`" in md
+    assert report.trace_summary() == {"total": 1, "applicable": 1, "passed": 0, "failed": 1}
+    assert report.trace_assertion_failures() == {"agent_call_pairing": 1}
+
+
+def test_render_markdown_without_trace_report() -> None:
+    trace = collect_from_events(_make_events())
+    sample = normalize(trace, LABELED_BALANCE)
+    result = SampleEvalResult(sample=sample, rule_report=run_rule_checks(sample))
+    report = EvalReport(
+        report_id="eval-notrace",
+        created_at="2026-01-01T00:00:00Z",
+        total=1,
+        passed=1,
+        results=[result],
+    )
+    md = render_markdown(report)
+    assert report.trace_summary()["applicable"] == 0
+    assert "没有可校验的 RAG / Agent 链路轨迹" in md
 
 
 # ---------------------------------------------------------------------------
@@ -447,3 +771,210 @@ def test_runner_single_sample_with_stubbed_model(tmp_path: Path, monkeypatch) ->
     assert "query_balance" in result.sample.actual_tools
     assert result.judge_scores is not None
     assert result.judge_scores.fallback is True  # 无 API key 退化
+    # 真实事件流也要能通过 Agent 链路断言
+    assert result.trace_report is not None
+    assert result.trace_report.applicable
+    assert result.trace_report.passed, result.trace_report.failures
+    # 真实事件流同样能产出指标；耗时类指标来自落盘 trace
+    assert result.metrics is not None
+    assert result.metrics.values["agent_tool_calls"] == 1.0
+    assert result.metrics.values["agent_tool_success_rate"] == 1.0
+    assert "e2e_ms" in result.metrics.values
+
+
+def test_prune_eval_workspaces_keeps_recent(tmp_path: Path) -> None:
+    """评测临时工作区只保留最近 keep 个，更早的自动清理，且不误删无关目录。"""
+    import os
+
+    from congclaw.eval.runner import prune_eval_workspaces
+
+    for i in range(5):
+        run_dir = tmp_path / f"mokio-eval-{i}"
+        run_dir.mkdir()
+        (run_dir / "events.jsonl").write_text("{}", encoding="utf-8")
+        os.utime(run_dir, (1000 + i, 1000 + i))  # 制造新旧顺序
+
+    unrelated = tmp_path / "not-eval-output"
+    unrelated.mkdir()
+
+    removed = prune_eval_workspaces(keep=3, temp_root=tmp_path)
+
+    assert sorted(p.name for p in removed) == ["mokio-eval-0", "mokio-eval-1"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "mokio-eval-2",
+        "mokio-eval-3",
+        "mokio-eval-4",
+        "not-eval-output",
+    ]
+    assert unrelated.exists()
+
+
+def test_prune_eval_workspaces_noop_within_keep(tmp_path: Path) -> None:
+    """未超过保留数量时不做任何删除。"""
+    from congclaw.eval.runner import prune_eval_workspaces
+
+    (tmp_path / "mokio-eval-only").mkdir()
+    assert prune_eval_workspaces(keep=3, temp_root=tmp_path) == []
+    assert (tmp_path / "mokio-eval-only").exists()
+    # 目录不存在时也不报错
+    assert prune_eval_workspaces(keep=3, temp_root=tmp_path / "missing") == []
+
+
+# ---------------------------------------------------------------------------
+# trace 指标（观测值）
+# ---------------------------------------------------------------------------
+
+
+def test_compute_metrics_rag_sample_without_timestamps() -> None:
+    """内存事件流（无 elapsed_ms）也能算出非耗时指标。"""
+    metrics = compute_metrics(collect_from_events(_rag_hit_events()))
+    values = metrics.values
+
+    assert values["rag_recall_bm25"] == 5.0
+    assert values["rag_recall_dense"] == 5.0
+    assert values["rag_recall_empty_channels"] == 0.0
+    assert values["rag_fusion_keep_rate"] == 0.7  # 7 / (5 + 5)
+    assert values["rag_parent_count"] == 2.0
+    assert values["rag_source_count"] == 2.0
+    assert values["intent_confidence"] == 0.92
+    # 没有落盘 trace 就没有时间戳，耗时类指标直接缺席而不是记 0
+    assert "rag_duration_ms" not in values
+    assert "intent_ms" not in values
+    assert "agent_tool_calls" not in values
+
+
+def test_compute_metrics_agent_sample() -> None:
+    metrics = compute_metrics(collect_from_events(_make_events()))
+    values = metrics.values
+
+    assert values["agent_tool_calls"] == 1.0
+    assert values["agent_tool_success_rate"] == 1.0
+    assert values["agent_calls_per_round"] == 1.0
+    assert values["agent_first_reflect_pass"] == 1.0
+    assert values["agent_reflect_retries"] == 0.0
+    # 该样本没有 RAG 事件，RAG 指标整体缺席
+    assert not any(name.startswith("rag_") for name in values)
+
+
+def test_compute_metrics_rewrite_effectiveness() -> None:
+    """重写有效性：重写后召回到=1，仍为空=0。"""
+    hit = compute_metrics(collect_from_events(_rag_rewrite_events()))
+    assert hit.values["rag_rewrite_effective"] == 1.0
+
+    empty_after_rewrite = [
+        {"type": "rag_start", "query": "那个多少钱"},
+        {"type": "rag_retrieve", "channel": "bm25", "count": 0, "attempt": 0},
+        {"type": "rag_retrieve", "channel": "dense", "count": 0, "attempt": 0},
+        {"type": "rag_gate", "decision": "rewrite", "attempts": 0},
+        {"type": "rag_rewrite", "original_query": "那个多少钱", "rewritten_query": "改写", "attempts": 1},
+        {"type": "rag_retrieve", "channel": "bm25", "count": 0, "attempt": 1},
+        {"type": "rag_retrieve", "channel": "dense", "count": 0, "attempt": 1},
+        {"type": "rag_gate", "decision": "fallback", "attempts": 1},
+        {"type": "rag_fallback", "reason": "rag_no_evidence", "attempts": 1},
+        {"type": "rag_finished", "has_answer": False},
+    ]
+    missed = compute_metrics(collect_from_events(empty_after_rewrite))
+    assert missed.values["rag_rewrite_effective"] == 0.0
+    assert missed.values["rag_recall_empty_channels"] == 2.0
+
+
+def test_compute_metrics_reads_elapsed_ms_from_trace_file(tmp_path: Path) -> None:
+    """落盘 trace 带 elapsed_ms，可算出耗时类指标与门控裕度。"""
+    records = [
+        {"seq": 1, "elapsed_ms": 20, "type": "session_turn_started", "payload": {"turn": 1}},
+        {
+            "seq": 2,
+            "elapsed_ms": 150,
+            "type": "intent_decision",
+            "payload": {"route": "rag_answer", "category": "rag_query", "confidence": 0.9},
+        },
+        {"seq": 3, "elapsed_ms": 1200, "type": "rag_start", "payload": {"query": "套餐流量"}},
+        {"seq": 4, "elapsed_ms": 1210, "type": "rag_retrieve",
+         "payload": {"channel": "bm25", "count": 5, "attempt": 0}},
+        {"seq": 5, "elapsed_ms": 1400, "type": "rag_retrieve",
+         "payload": {"channel": "dense", "count": 0, "attempt": 0}},
+        {"seq": 6, "elapsed_ms": 1500, "type": "rag_fusion",
+         "payload": {"bm25_count": 5, "dense_count": 0, "fused_count": 4}},
+        {"seq": 7, "elapsed_ms": 1800, "type": "rag_rerank",
+         "payload": {"count": 2, "top": [{"rerank_prob": 0.8}, {"rerank_prob": 0.3}]}},
+        {"seq": 8, "elapsed_ms": 1820, "type": "rag_gate",
+         "payload": {"decision": "parent_lookup", "hit_count": 2,
+                     "top_rerank_prob": 0.8, "gate_prob": 0.53}},
+        {"seq": 9, "elapsed_ms": 1900, "type": "rag_parent_lookup",
+         "payload": {"parent_count": 2,
+                     "evidence": [{"matched_children": ["c1", "c2"]}, {"matched_children": ["c3"]}]}},
+        {"seq": 10, "elapsed_ms": 3000, "type": "rag_answer", "payload": {"sources_count": 2}},
+        {"seq": 11, "elapsed_ms": 3050, "type": "rag_finished", "payload": {"has_answer": True}},
+        {"seq": 12, "elapsed_ms": 3100, "type": "session_turn_saved", "payload": {"turn": 1}},
+    ]
+    for record in records:
+        record["timestamp"] = "2026-01-01T00:00:00Z"
+    trace_dir = tmp_path / "trace-20260101-000000-abc123"
+    trace_dir.mkdir()
+    (trace_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in records), encoding="utf-8"
+    )
+
+    trace = collect_from_trace_dir(trace_dir)
+    values = compute_metrics(trace).values
+
+    assert values["intent_ms"] == 130.0  # 150 - 20
+    assert values["e2e_ms"] == 3080.0  # 3100 - 20
+    assert values["rag_duration_ms"] == 1850.0  # 3050 - 1200
+    assert values["rag_recall_dense"] == 0.0
+    assert values["rag_recall_empty_channels"] == 1.0
+    assert values["rag_fusion_keep_rate"] == 0.8  # 4 / 5
+    assert values["rag_top_rerank_prob"] == 0.8
+    assert values["rag_gate_margin"] == 0.27  # 0.8 - 0.53
+    assert values["rag_gate_hit_count"] == 2.0
+    assert values["rag_children_per_parent"] == 1.5  # 3 个子片段 / 2 个父分片
+
+
+def test_aggregate_metrics_mean_min_max_and_coverage() -> None:
+    """聚合给均值/极值/样本数；不适用的样本不计入 n。"""
+    from congclaw.eval.trace_metrics import TraceMetrics, aggregate_metrics
+
+    summary = aggregate_metrics(
+        [
+            TraceMetrics({"e2e_ms": 100.0, "rag_source_count": 2.0}),
+            TraceMetrics({"e2e_ms": 300.0}),
+        ]
+    )
+    assert summary["e2e_ms"] == {"mean": 200.0, "min": 100.0, "max": 300.0, "n": 2}
+    assert summary["rag_source_count"] == {
+        "mean": 2.0,
+        "min": 2.0,
+        "max": 2.0,
+        "n": 1,
+    }
+
+
+def test_report_renders_metrics_section(tmp_path: Path) -> None:
+    """链路指标在报告里单开一节，且不进入 pass_rate。"""
+    from congclaw.eval.trace_metrics import TraceMetrics
+
+    trace = collect_from_events(_make_events())
+    sample = normalize(trace, LABELED_BALANCE)
+    result = SampleEvalResult(
+        sample=sample,
+        rule_report=run_rule_checks(sample),
+        metrics=TraceMetrics({"e2e_ms": 100.0, "agent_tool_calls": 1.0}),
+    )
+    report = EvalReport(
+        report_id="eval-metrics",
+        created_at="2026-01-01T00:00:00Z",
+        total=1,
+        passed=1,
+        results=[result],
+    )
+
+    md = render_markdown(report)
+    assert "## 链路指标（观测值，不做阈值判定、不计入通过率）" in md
+    assert "端到端耗时(ms)" in md
+    assert report.pass_rate == 100.0
+
+    out = tmp_path / "reports"
+    write_report(report, reports_dir=out)
+    data = json.loads((out / "eval-metrics.json").read_text(encoding="utf-8"))
+    assert data["trace_metrics"]["e2e_ms"]["mean"] == 100.0
+    assert data["samples"][0]["metrics"]["agent_tool_calls"] == 1.0
