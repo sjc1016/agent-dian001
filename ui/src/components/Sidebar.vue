@@ -11,6 +11,12 @@ const approvals = computed(() => String(sessionStore.approvalCount))
 const todos = computed(() => sessionStore.currentTodoText())
 
 const rows = computed(() => [
+  {
+    label: 'user',
+    value: sessionStore.phone
+      ? `${sessionStore.userName || '未知客户'} · ${sessionStore.phone}`
+      : '(未选择)',
+  },
   { label: 'status', value: status.value },
   { label: 'turns', value: String(sessionStore.runCount) },
   { label: 'session', value: sessionStore.sessionId ? sessionStore.sessionId.slice(0, 24) : '(starting)' },

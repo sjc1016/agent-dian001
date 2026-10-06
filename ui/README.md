@@ -16,18 +16,48 @@ ui/
     ├── style.css               # 全局样式与设计 token
     ├── api/
     │   ├── chat.js             # SSE 对话接口
-    │   └── sessions.js         # 历史会话接口
+    │   ├── sessions.js         # 历史会话接口（支持按用户前缀过滤）
+    │   └── users.js            # 用户（客户）列表接口
     ├── stores/
-    │   └── session.js          # 全局会话状态
+    │   ├── session.js          # 全局会话状态
+    │   └── user.js             # 当前用户状态与按用户的工作区命名
     ├── utils/
     │   └── events.js           # 事件摘要/分类/折叠逻辑（复刻 TUI）
     └── components/
         ├── ChatView.vue        # 聊天主区域
+        ├── TurnBlock.vue       # 单轮对话（提问 + 思考过程折叠区 + 最终回复）
         ├── EventCard.vue       # 单条事件卡片
         ├── Sidebar.vue         # 右侧会话状态栏
         ├── SessionPanel.vue    # 会话列表面板
+        ├── UserSwitcher.vue    # 用户切换下拉面板
         └── ApprovalDialog.vue  # 审批弹窗
 ```
+
+## 多用户与会话隔离
+
+用户即电信客户（以手机号码标识）。顶栏右侧的用户切换器可切换当前客户，切换后界面进入该客户独立的空间：
+
+- 业务数据：号码决定 `account` / `user_package` / `fault_ticket` 的查询结果；
+- 长期记忆：`user_profile` 按号码维度保存跨会话摘要；
+- 会话隔离：每位客户的会话存放在 `.congclaw/workspaces/user-<号码>/` 下，每个会话一个子目录，
+  因此同一客户可以有多个会话，而不同客户之间互不可见。
+
+切换用户时前端会把 `phone` 随 `/api/v1/chat` 下发，并携带该用户的工作区路径；
+会话面板则通过 `workspace_prefix` + `phone` 参数只拉取当前用户的会话。
+
+### 默认用户与历史会话
+
+默认演示用户为 **张伟（`13800138000`）**，即 `business_store.DEFAULT_DEMO_PHONE`：号码留空时后端
+统一按该号码处理业务查询与长期记忆。
+
+多用户改造之前创建的会话直接落在 `<项目根>/.congclaw/workspaces/workspace-<时间戳>-<随机>/`
+（更早一代为 `.mokioclaw/`），路径中不含 `user-<号码>`，无法反推归属。这些会话统一划归默认用户：
+默认用户在会话面板中除本人会话外，还会看到这批历史会话，并带「历史」标记。
+
+实现上由 `core/paths.legacy_workspace_prefixes()` 给出遗留目录名前缀，`GET /api/v1/sessions`
+在 `phone` 等于默认号码时把这些前缀作为 `extra_prefixes` 一并参与匹配（OR 语义）；
+每条结果附带 `legacy: true/false`，供前端区分展示。改造前的会话未被移动或改写，
+`SESSION_SUMMARY.md`、检查点等目录内容保持原样。
 
 ## 本地开发
 

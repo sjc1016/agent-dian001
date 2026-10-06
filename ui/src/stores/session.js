@@ -3,6 +3,9 @@ import { reactive } from 'vue'
 export const sessionStore = reactive({
   workspace: '',
   sessionId: '',
+  // 当前用户（电信客户）身份：号码决定业务数据、长期记忆与会话隔离
+  phone: '',
+  userName: '',
   turn: 0,
   runCount: 0,
   route: '',
@@ -15,6 +18,8 @@ export const sessionStore = reactive({
   running: false,
 
   reset() {
+    // 注意：phone / userName 属于用户身份，跨会话保持不变，
+    // 仅在切换用户时由外部显式覆盖，因此不在此处清空。
     this.workspace = ''
     this.sessionId = ''
     this.turn = 0

@@ -20,6 +20,7 @@ from congclaw.api.routes.eval import router as eval_router
 from congclaw.api.routes.knowledge import router as knowledge_router
 from congclaw.api.routes.sessions import router as sessions_router
 from congclaw.api.routes.skills import router as skills_router
+from congclaw.api.routes.users import router as users_router
 from congclaw.db import init_db, resolve_db_path
 from congclaw.db.engine import dispose_engine
 from congclaw.skills.registry import get_registry, shutdown_registry
@@ -66,6 +67,7 @@ app.include_router(knowledge_router)
 app.include_router(skills_router)
 app.include_router(eval_router)
 app.include_router(sessions_router)
+app.include_router(users_router)
 
 
 @app.get("/health", tags=["system"])

@@ -67,6 +67,23 @@ async def get_account(phone: str) -> dict[str, Any]:
     return data
 
 
+async def list_accounts(*, limit: int = 50) -> list[dict[str, Any]]:
+    """列出全部在网账户（号码 + 机主姓名），供前端用户切换使用。
+
+    用户身份即电信号码：同一号码在 ``user_profile`` 中拥有独立的长期记忆，
+    在 ``session`` 表中拥有独立的工作区与会话记录。
+    """
+    await _ensure()
+    async with _connect() as connection:
+        connection.row_factory = aiosqlite.Row
+        cursor = await connection.execute(
+            "SELECT phone, owner_name FROM account ORDER BY phone LIMIT ?",
+            (int(limit),),
+        )
+        rows = await cursor.fetchall()
+    return [{"phone": row["phone"], "owner_name": row["owner_name"] or ""} for row in rows]
+
+
 async def get_user_package_detail(phone: str) -> dict[str, Any]:
     """查询用户当前套餐 + 余量（user_package 关联 package_catalog 计算）。"""
     await _ensure()

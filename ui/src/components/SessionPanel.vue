@@ -1,9 +1,13 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { listSessions } from '../api/sessions.js'
+import { userLabel } from '../stores/user.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
+  user: { type: Object, default: null },
+  workspacePrefix: { type: String, default: '' },
+  currentSessionId: { type: String, default: '' },
 })
 
 const emit = defineEmits(['select', 'close', 'new'])
@@ -16,10 +20,13 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const data = await listSessions()
+    // 仅拉取当前用户工作区下的会话，实现按用户的会话隔离；
+    // 默认用户会额外带回改造前的未归属历史会话（legacy 标记）。
+    const data = await listSessions(100, props.workspacePrefix, props.user?.phone || '')
     sessions.value = data.sessions || []
   } catch (err) {
     error.value = err.message
+    sessions.value = []
   } finally {
     loading.value = false
   }
@@ -27,6 +34,14 @@ async function load() {
 
 watch(() => props.visible, (visible) => {
   if (visible) load()
+})
+
+watch(() => props.workspacePrefix, () => {
+  if (props.visible) load()
+})
+
+watch(() => props.user?.phone, () => {
+  if (props.visible) load()
 })
 
 function select(session) {
@@ -46,36 +61,51 @@ function formatDate(value) {
   const date = new Date(value)
   return date.toLocaleString('zh-CN')
 }
+
+function isActive(session) {
+  return session.session_id && session.session_id === props.currentSessionId
+}
 </script>
 
 <template>
   <div v-if="visible" class="modal-overlay" @click.self="close">
     <div class="modal">
       <div class="modal-header">
-        <h3>Sessions</h3>
+        <div class="header-text">
+          <h3>Sessions</h3>
+          <span class="header-user">{{ userLabel(user) }}</span>
+        </div>
         <button class="close-btn" @click="close">×</button>
       </div>
       <div class="modal-actions">
-        <button class="primary-btn" @click="createNew">+ New Session</button>
-        <button class="ghost-btn" @click="load" :disabled="loading">Refresh</button>
+        <button class="primary-btn" @click="createNew">+ 新建会话</button>
+        <button class="ghost-btn" @click="load" :disabled="loading">刷新</button>
       </div>
       <div v-if="error" class="error">{{ error }}</div>
-      <div v-if="loading" class="loading">Loading sessions...</div>
-      <div v-else class="session-list">
+      <div class="session-list">
         <div
           v-for="session in sessions"
           :key="session.session_id"
           class="session-item"
+          :class="{ active: isActive(session) }"
           @click="select(session)"
         >
           <div class="session-top">
             <span class="session-id">{{ session.session_id?.slice(0, 16) || 'unknown' }}</span>
             <span class="session-date">{{ formatDate(session.updated_at) }}</span>
           </div>
-          <div class="session-route">route: {{ session.last_route || '(none)' }}</div>
-          <div class="session-task">{{ session.last_task || 'No task' }}</div>
+          <div class="session-meta">
+            <span class="session-route">route: {{ session.last_route || '(none)' }}</span>
+            <span class="session-turn">{{ session.turn_index || 0 }} 轮</span>
+            <span v-if="session.legacy" class="session-badge legacy-badge" title="多用户改造前创建的历史会话，归属默认用户">历史</span>
+            <span v-if="isActive(session)" class="session-badge">当前</span>
+          </div>
+          <div class="session-task">{{ session.last_task || '暂无提问记录' }}</div>
         </div>
-        <div v-if="!sessions.length && !loading" class="empty">No sessions found.</div>
+        <div v-if="!sessions.length && !loading" class="empty">
+          该用户暂无历史会话，发送消息或点击「新建会话」开始。
+        </div>
+        <div v-if="loading" class="loading">加载中...</div>
       </div>
     </div>
   </div>
@@ -112,9 +142,20 @@ function formatDate(value) {
   border-bottom: 1px solid var(--border-color);
 }
 
+.header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .modal-header h3 {
   margin: 0;
   color: var(--text-primary);
+}
+
+.header-user {
+  color: var(--accent);
+  font-size: 12px;
 }
 
 .close-btn {
@@ -168,6 +209,10 @@ function formatDate(value) {
   background: var(--bg-tertiary);
 }
 
+.session-item.active {
+  border-color: var(--accent-dim);
+}
+
 .session-top {
   display: flex;
   justify-content: space-between;
@@ -187,10 +232,33 @@ function formatDate(value) {
   flex-shrink: 0;
 }
 
-.session-route {
-  color: var(--warning);
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 12px;
   margin-bottom: 4px;
+}
+
+.session-route {
+  color: var(--warning);
+}
+
+.session-turn {
+  color: var(--text-muted);
+}
+
+.session-badge {
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.legacy-badge {
+  color: var(--text-muted);
+  border-color: var(--border-color);
 }
 
 .session-task {

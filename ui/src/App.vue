@@ -4,7 +4,16 @@ import ChatView from './components/ChatView.vue'
 import Sidebar from './components/Sidebar.vue'
 import SessionPanel from './components/SessionPanel.vue'
 import ApprovalDialog from './components/ApprovalDialog.vue'
+import UserSwitcher from './components/UserSwitcher.vue'
 import { sessionStore } from './stores/session.js'
+import {
+  userStore,
+  userLabel,
+  userWorkspacePrefix,
+  newSessionWorkspace,
+  loadAndResolveUser,
+  rememberUserPhone,
+} from './stores/user.js'
 import { streamChat } from './api/chat.js'
 import { getSession } from './api/sessions.js'
 import {
@@ -27,6 +36,10 @@ const currentController = ref(null)
 const chatViewRef = ref(null)
 
 const isRunning = computed(() => running.value)
+// 当前用户的工作区前缀：用于按用户过滤历史会话
+const workspacePrefix = computed(() =>
+  userStore.current ? userWorkspacePrefix(userStore.current) : ''
+)
 let turnSeq = 0
 
 function pushNotice(title, body, category = 'info', collapsed = true, detail = null) {
@@ -34,9 +47,12 @@ function pushNotice(title, body, category = 'info', collapsed = true, detail = n
 }
 
 function pushWelcome() {
+  const who = userStore.current
   pushNotice(
     'Mokio Agent',
-    '电信客服智能体已就绪。可以直接提问，也可以用 /new 开启新会话。',
+    who
+      ? `当前用户：${userLabel(who)}。可以直接提问，也可以用 /new 开启新会话。`
+      : '电信客服智能体已就绪。可以直接提问，也可以用 /new 开启新会话。',
     'info',
     true,
     '每轮对话的中间执行过程会收拢在「思考过程」中，最终回复以对话气泡形式展示。'
@@ -74,19 +90,62 @@ function clearAll() {
   pushWelcome()
 }
 
+function abortStream() {
+  if (currentController.value) {
+    currentController.value.abort()
+    currentController.value = null
+  }
+}
+
 function resetState() {
+  abortStream()
   sessionStore.reset()
   running.value = false
   approvalRequest.value = null
   approvalResolver.value = null
 }
 
+/** 为当前用户开一个新的会话工作区（同一用户可有多个会话）。 */
+function startNewSession() {
+  const user = userStore.current
+  sessionStore.workspace = user ? newSessionWorkspace(user) : ''
+  sessionStore.sessionId = ''
+  sessionStore.turn = 0
+  sessionStore.route = ''
+}
+
+/**
+ * 切换当前用户：重置会话状态，并为其分配独立工作区。
+ * 由于工作区按 ``user-<phone>/`` 前缀隔离，历史会话与长期记忆都不会串号。
+ */
+function applyUser(user, { clearConversation = true } = {}) {
+  if (!user) return
+  resetState()
+  userStore.current = user
+  rememberUserPhone(user.phone)
+  sessionStore.phone = user.phone
+  sessionStore.userName = user.owner_name || ''
+  startNewSession()
+  if (clearConversation) {
+    turns.value = []
+    notices.value = []
+    pushNotice('已切换用户', `当前身份：${userLabel(user)}`, 'info', false)
+    pushWelcome()
+  }
+}
+
+function onSwitchUser(user) {
+  if (user.phone === userStore.current?.phone) return
+  applyUser(user)
+}
+
 function handleCommand(text) {
   if (text === '/new') {
     resetState()
+    startNewSession()
     turns.value = []
     notices.value = []
-    pushNotice('New Session', '已开启新的会话工作区。', 'info', false)
+    pushNotice('新会话', `已为 ${userLabel(userStore.current)} 开启新的会话工作区。`, 'info', false)
     pushWelcome()
     return true
   }
@@ -153,6 +212,10 @@ function onApprovalResolved({ approved }) {
 
 function startStream(task) {
   if (running.value) return
+  // 兜底：确保当前用户已有专属工作区，避免落到后端随机工作区而丢失用户归属
+  if (!sessionStore.workspace && userStore.current) {
+    startNewSession()
+  }
   running.value = true
   sessionStore.setRunning(true)
   sessionStore.runCount += 1
@@ -163,6 +226,8 @@ function startStream(task) {
     message: task,
     workspace: sessionStore.workspace || undefined,
     sessionId: sessionStore.sessionId || undefined,
+    // 用户身份随请求下发：后端据此加载该号码的账户数据与长期记忆
+    phone: sessionStore.phone || undefined,
     approvalMode: 'inline',
     maxAttempts: 3,
     onEvent: (event) => {
@@ -193,6 +258,8 @@ function startStream(task) {
 }
 
 function finishRun(turn, status) {
+  // 同一轮可能先后触发 onError 与 onDone，这里只结算一次
+  if (turn.status !== 'running') return
   running.value = false
   sessionStore.setRunning(false)
   turn.status = status === 'finished' ? 'done' : 'failed'
@@ -211,20 +278,29 @@ function onSelectSession(session) {
   resetState()
   turns.value = []
   notices.value = []
+  // 该会话已归属当前用户（列表按用户工作区前缀过滤），沿用其身份与工作区
+  sessionStore.phone = userStore.current?.phone || sessionStore.phone
+  sessionStore.userName = userStore.current?.owner_name || sessionStore.userName
   sessionStore.workspace = session.workspace || ''
   sessionStore.sessionId = session.session_id || ''
   sessionStore.turn = session.turn_index || 0
   sessionStore.route = session.last_route || ''
-  pushNotice('已切换会话', session.workspace, 'info', false)
+  pushNotice(
+    '已切换会话',
+    `${session.session_id || '未知会话'} · ${session.turn_index || 0} 轮`,
+    'info',
+    false
+  )
   loadSessionHistory(session.session_id)
 }
 
 function onNewSession() {
   showSessions.value = false
   resetState()
+  startNewSession()
   turns.value = []
   notices.value = []
-  pushNotice('New Session', '已开启新的会话工作区。', 'info', false)
+  pushNotice('新会话', `已为 ${userLabel(userStore.current)} 开启新的会话工作区。`, 'info', false)
   pushWelcome()
 }
 
@@ -239,14 +315,17 @@ function handleKeydown(e) {
   }
 }
 
-onMounted(() => {
-  pushWelcome()
+onMounted(async () => {
   window.addEventListener('keydown', handleKeydown)
+  // 先解析当前用户（接口不可用时回退到默认演示号码），再初始化其专属会话
+  const user = await loadAndResolveUser()
+  applyUser(user, { clearConversation: false })
+  pushWelcome()
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
-  if (currentController.value) currentController.value.abort()
+  abortStream()
 })
 </script>
 
@@ -271,6 +350,7 @@ onUnmounted(() => {
         <div class="subtitle">电信客服智能体 Web UI</div>
       </div>
       <div class="actions">
+        <UserSwitcher @switch="onSwitchUser" />
         <button @click="showSessions = true">Sessions</button>
         <button @click="clearAll">Clear</button>
       </div>
@@ -290,6 +370,9 @@ onUnmounted(() => {
 
     <SessionPanel
       :visible="showSessions"
+      :user="userStore.current"
+      :workspace-prefix="workspacePrefix"
+      :current-session-id="sessionStore.sessionId"
       @select="onSelectSession"
       @new="onNewSession"
       @close="showSessions = false"

@@ -128,6 +128,12 @@ CREATE TABLE IF NOT EXISTS user_profile (
 INSERT OR IGNORE INTO account (phone, owner_name, balance, real_time_fee, bill_cycle, updated_at)
 VALUES ('13800138000', '张伟', 86.50, 113.50, '2026-09', '2026-09-30T08:00:00+00:00');
 
+-- 多用户演示种子：用于验证「切换用户 → 会话与记忆互相隔离」的能力
+INSERT OR IGNORE INTO account (phone, owner_name, balance, real_time_fee, bill_cycle, updated_at)
+VALUES
+    ('13900139000', '李娜', 45.20, 88.00, '2026-09', '2026-09-30T08:00:00+00:00'),
+    ('13700137000', '王强', 152.80, 76.40, '2026-09', '2026-09-30T08:00:00+00:00');
+
 INSERT OR IGNORE INTO package_catalog
     (package_id, name, monthly_fee, data_quota_gb, voice_minutes, broadband_mbps, description, active)
 VALUES
@@ -143,6 +149,12 @@ VALUES
 INSERT OR IGNORE INTO user_package
     (phone, package_id, package_name, data_used_gb, voice_used_min, effective_date, updated_at)
 VALUES ('13800138000', 'P129', '5G畅享129元档', 18.6, 120, '2026-08-01', '2026-09-30T08:00:00+00:00');
+
+INSERT OR IGNORE INTO user_package
+    (phone, package_id, package_name, data_used_gb, voice_used_min, effective_date, updated_at)
+VALUES
+    ('13900139000', 'P199', '5G畅享199元档', 42.3, 320, '2026-06-15', '2026-09-30T08:00:00+00:00'),
+    ('13700137000', 'BB169', '全屋WiFi融合169元档', 12.5, 150, '2026-03-01', '2026-09-30T08:00:00+00:00');
 
 INSERT OR IGNORE INTO fault_ticket
     (ticket_id, phone, fault_type, description, address, contact, status, status_note, created_at, updated_at)

@@ -40,6 +40,8 @@ export function streamChat({ message, workspace, sessionId, phone, approvalMode 
             if (!dataMatch) continue
             const raw = dataMatch[1].trim()
             if (raw === '[DONE]') {
+              // 主动关闭读取端，避免后端结束流后浏览器记录 ERR_ABORTED 噪音
+              reader.cancel().catch(() => {})
               onDone?.()
               return
             }

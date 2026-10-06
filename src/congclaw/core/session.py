@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from congclaw.core.checkpoint import workspace_manifest
 from congclaw.db import SessionModel, session_scope
@@ -55,19 +55,46 @@ def load_or_create_session(workspace: Path) -> dict[str, Any]:
     return _run(aload_or_create_session(workspace))
 
 
-async def alist_sessions(limit: int = 100) -> list[dict[str, Any]]:
-    """列出全部历史会话（按更新时间倒序），供 TUI/前端会话切换使用。"""
+async def alist_sessions(
+    limit: int = 100,
+    workspace_prefix: str | None = None,
+    extra_prefixes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """列出历史会话（按更新时间倒序）。
+
+    ``workspace_prefix`` 用于按用户维度过滤：各用户的会话存放在独立的
+    ``user-<phone>/`` 目录下，传入该目录的绝对路径前缀即可只返回该用户的会话。
+
+    ``extra_prefixes`` 为额外的前缀集合（OR 语义），用于让默认用户同时看到
+    多用户改造前遗留在 ``workspaces/workspace-*`` 下的未归属历史会话。
+    """
     await _ensure_db()
+    stmt = select(SessionModel)
+    prefixes = [prefix for prefix in [workspace_prefix, *(extra_prefixes or [])] if prefix]
+    if prefixes:
+        stmt = stmt.where(or_(*[_prefix_condition(prefix) for prefix in prefixes]))
+    stmt = stmt.order_by(SessionModel.updated_at.desc()).limit(limit)
     async with session_scope() as session:
-        result = await session.execute(
-            select(SessionModel).order_by(SessionModel.updated_at.desc()).limit(limit)
-        )
+        result = await session.execute(stmt)
         rows = result.scalars().all()
     return [_row_to_session_summary(row) for row in rows]
 
 
-def list_sessions(limit: int = 100) -> list[dict[str, Any]]:
-    return _run(alist_sessions(limit))
+def _prefix_condition(prefix: str):
+    """构造「workspace 以 prefix 开头」的精确条件。
+
+    用 ``substr`` 比较而非 ``LIKE``：Windows 路径中的反斜杠与 ``%``/``_``
+    通配符会干扰 ``LIKE`` 的匹配语义。
+    """
+    return func.substr(SessionModel.workspace, 1, len(prefix)) == prefix
+
+
+def list_sessions(
+    limit: int = 100,
+    workspace_prefix: str | None = None,
+    extra_prefixes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    return _run(alist_sessions(limit, workspace_prefix, extra_prefixes))
 
 
 def append_user_turn(session: dict[str, Any], content: str) -> int:
