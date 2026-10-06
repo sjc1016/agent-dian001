@@ -82,6 +82,17 @@ function summarizeCustomEvent(event) {
     const ok = result && typeof result === 'object' ? result.ok : null
     return { title: `${node} · ${name} result`, body: formatToolResult(result), category: 'tool_result', style: ok === false ? 'red' : 'green' }
   }
+  // agent_loop 主路径的 Skill 调用事件（与遗留 planner 的 tool_call / tool_result 并存）。
+  // 二者语义相同（都是能力被调用），因此复用同一 category，便于统计与配色统一。
+  if (eventType === 'skill_call') {
+    const name = event.name || 'skill'
+    return { title: `技能调用 · ${name}`, body: shorten(event.args || {}, 500), category: 'tool_call', style: 'magenta' }
+  }
+  if (eventType === 'skill_result') {
+    const name = event.name || 'skill'
+    const ok = event.ok !== false
+    return { title: `技能返回 · ${name}`, body: formatSkillResult(event), category: 'tool_result', style: ok ? 'green' : 'red' }
+  }
   if (eventType === 'handoff') {
     return {
       title: `Handoff · ${event.from || 'agent'} -> ${event.to || 'agent'}`,
@@ -202,6 +213,19 @@ function formatToolResult(result) {
   return lines.join('\n') || shorten(result, 700)
 }
 
+/**
+ * 格式化 Skill 返回事件。
+ * 注意：skill_result 的成败标记在**顶层** `ok` 字段（见 congclaw/agent/nodes.py），
+ * 与 tool_result 把结果包在 `result` 对象里不同，这里显式用 `ok: false` 便于统一判定失败。
+ */
+function formatSkillResult(event) {
+  const lines = [`ok: ${event.ok !== false}`]
+  if (event.call_id) lines.push(`call_id: ${event.call_id}`)
+  if (event.error) lines.push(`error: ${event.error}`)
+  if (event.preview) lines.push(`preview:\n${shorten(event.preview, 600)}`)
+  return lines.join('\n')
+}
+
 function formatMemorySnapshot(event) {
   const layers = event.layers || {}
   return [
@@ -296,7 +320,8 @@ export function shouldCollapse(summary) {
 export function eventCategory(summary) {
   if (summary.category === 'final' || summary.category === 'trace') return 'success'
   if (summary.category === 'verifier' || summary.category === 'tool_result') {
-    if (summary.body && summary.body.includes('FAIL')) return 'error'
+    // formatToolResult / formatSkillResult 均以「ok: false」标记调用失败
+    if (summary.body && (summary.body.includes('FAIL') || summary.body.includes('ok: false'))) return 'error'
   }
   if (['plan', 'tool_call', 'handoff', 'context', 'checkpoint'].includes(summary.category)) return 'running'
   return 'info'

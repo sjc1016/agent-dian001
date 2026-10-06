@@ -2,31 +2,37 @@
 import { computed } from 'vue'
 import { sessionStore } from '../stores/session.js'
 
-const status = computed(() => (sessionStore.running ? 'running' : 'ready'))
-const workspace = computed(() => sessionStore.workspace || '(waiting)')
-const checkpoint = computed(() => sessionStore.checkpoint || '(waiting)')
-const trace = computed(() => sessionStore.trace || '(waiting)')
-const tools = computed(() => `${sessionStore.toolCount} total / ${sessionStore.failedToolCount} failed`)
+// 面板文案面向业务演示统一使用中文；括号内为对应的后端术语
+const status = computed(() => (sessionStore.running ? '运行中' : '就绪'))
+const workspace = computed(() => sessionStore.workspace || '(等待中)')
+const checkpoint = computed(() => sessionStore.checkpoint || '(等待中)')
+const trace = computed(() => sessionStore.trace || '(等待中)')
+// 能力维度（skills）：注册中心已加载的 Skill 数量，即 Agent 当前可用的业务能力
+const skills = computed(() => `${sessionStore.skillCount} 个`)
+// 调用维度（tools）：本轮技能/工具的实际调用次数与失败数；
+// 同时统计 agent_loop 主路径的 skill_call/skill_result 与遗留 planner 的 tool_call/tool_result
+const tools = computed(() => `${sessionStore.toolCount} 次 / 失败 ${sessionStore.failedToolCount}`)
 const approvals = computed(() => String(sessionStore.approvalCount))
 const todos = computed(() => sessionStore.currentTodoText())
 
 const rows = computed(() => [
   {
-    label: 'user',
+    label: '用户',
     value: sessionStore.phone
       ? `${sessionStore.userName || '未知客户'} · ${sessionStore.phone}`
       : '(未选择)',
   },
-  { label: 'status', value: status.value },
-  { label: 'turns', value: String(sessionStore.runCount) },
-  { label: 'session', value: sessionStore.sessionId ? sessionStore.sessionId.slice(0, 24) : '(starting)' },
-  { label: 'route', value: sessionStore.route || '(none)' },
-  { label: 'workspace', value: workspace.value },
-  { label: 'checkpoint', value: checkpoint.value },
-  { label: 'trace', value: trace.value },
-  { label: 'tools', value: tools.value },
-  { label: 'approvals', value: approvals.value },
-  { label: 'todos', value: todos.value },
+  { label: '状态', value: status.value },
+  { label: '轮次', value: String(sessionStore.runCount) },
+  { label: '会话', value: sessionStore.sessionId ? sessionStore.sessionId.slice(0, 24) : '(启动中)' },
+  { label: '路由', value: sessionStore.route || '(无)' },
+  { label: '工作区', value: workspace.value },
+  { label: '检查点', value: checkpoint.value },
+  { label: '追踪', value: trace.value },
+  { label: '已注册技能', value: skills.value },
+  { label: '技能调用', value: tools.value },
+  { label: '待确认', value: approvals.value },
+  { label: '待办', value: todos.value },
 ])
 </script>
 
@@ -70,8 +76,10 @@ const rows = computed(() => [
 .sidebar-label {
   color: var(--accent);
   font-weight: 600;
-  min-width: 72px;
+  /* 容纳「已注册技能」等 5 字中文标签，并保证各行列左对齐 */
+  min-width: 76px;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .sidebar-value {

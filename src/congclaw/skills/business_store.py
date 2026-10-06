@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import aiosqlite
 
+from congclaw.db.baseline import DEFAULT_PACKAGE_ID, provision_account_baseline
 from congclaw.db.engine import init_db, resolve_db_path
 from congclaw.skills.base import SkillError
 
@@ -68,20 +69,45 @@ async def get_account(phone: str) -> dict[str, Any]:
 
 
 async def list_accounts(*, limit: int = 50) -> list[dict[str, Any]]:
-    """列出全部在网账户（号码 + 机主姓名），供前端用户切换使用。
+    """列出全部在网账户（号码 + 用户名 + 机主姓名），供前端用户切换使用。
 
     用户身份即电信号码：同一号码在 ``user_profile`` 中拥有独立的长期记忆，
-    在 ``session`` 表中拥有独立的工作区与会话记录。
+    在 ``session`` 表中拥有独立的工作区与会话记录。返回值不包含口令哈希。
     """
     await _ensure()
     async with _connect() as connection:
         connection.row_factory = aiosqlite.Row
         cursor = await connection.execute(
-            "SELECT phone, owner_name FROM account ORDER BY phone LIMIT ?",
+            "SELECT phone, username, owner_name FROM account ORDER BY phone LIMIT ?",
             (int(limit),),
         )
         rows = await cursor.fetchall()
-    return [{"phone": row["phone"], "owner_name": row["owner_name"] or ""} for row in rows]
+    return [
+        {
+            "phone": row["phone"],
+            "username": row["username"] or "",
+            "owner_name": row["owner_name"] or "",
+        }
+        for row in rows
+    ]
+
+
+async def provision_account(
+    phone: str, *, owner_name: str = "", package_id: str = DEFAULT_PACKAGE_ID
+) -> dict[str, Any]:
+    """为新开户或基线缺失的号码补齐业务数据（幂等，只补缺失）。
+
+    补齐 ``user_package``（默认档位套餐）与 ``user_profile``（长期记忆锚点），
+    使该号码与演示账号一样可正常使用套餐查询、套餐办理等全部业务操作。
+    注册流程已在同一事务内直接调用底层函数，本入口供迁移与补偿场景使用。
+    """
+    await _ensure()
+    async with _connect() as connection:
+        result = await provision_account_baseline(
+            connection, phone, owner_name=owner_name, package_id=package_id
+        )
+        await connection.commit()
+    return result
 
 
 async def get_user_package_detail(phone: str) -> dict[str, Any]:
@@ -282,7 +308,17 @@ async def list_fault_tickets(phone: str, *, limit: int = 5) -> list[dict[str, An
 async def change_package(phone: str, target: str) -> dict[str, Any]:
     """执行套餐变更：校验目标套餐与当前套餐后更新 user_package（演示为次月生效）。"""
     await _ensure()
-    current = await get_user_package_detail(phone)
+    # 变更前先确认号码是在网账户，以便与「套餐缺失」区分出明确错误
+    account = await get_account(phone)
+    try:
+        current = await get_user_package_detail(phone)
+    except SkillError as error:
+        if error.code != "package_not_found":
+            raise
+        # 该号码尚未建立套餐基线（历史数据缺失或早期注册账号）：
+        # 先按默认档位开户，再继续本次变更，避免「办不了套餐」
+        await provision_account(phone, owner_name=str(account.get("owner_name") or ""))
+        current = await get_user_package_detail(phone)
     target_pkg = await resolve_package(target)
     if target_pkg["package_id"] == current["package_id"]:
         raise SkillError(

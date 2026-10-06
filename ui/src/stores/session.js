@@ -13,13 +13,15 @@ export const sessionStore = reactive({
   trace: '',
   toolCount: 0,
   failedToolCount: 0,
+  // 注册中心已加载的 Skill 总数（能力维度，全局一致，不随会话切换变化）
+  skillCount: 0,
   approvalCount: 0,
   todos: [],
   running: false,
 
   reset() {
-    // 注意：phone / userName 属于用户身份，跨会话保持不变，
-    // 仅在切换用户时由外部显式覆盖，因此不在此处清空。
+    // 注意：phone / userName 属于用户身份，skillCount 属于全局能力清单，
+    // 三者跨会话保持不变，仅在切换用户时由外部显式覆盖，因此不在此处清空。
     this.workspace = ''
     this.sessionId = ''
     this.turn = 0
@@ -50,12 +52,16 @@ export const sessionStore = reactive({
       this.todos = payload.todos
     }
 
-    if (payload.type === 'tool_call') {
+    // 调用统计同时兼容两套事件名：
+    // - agent_loop 主路径发 skill_call / skill_result（失败标记在顶层 ok）；
+    // - 遗留 planner 工作流发 tool_call / tool_result（失败标记在 result.ok）。
+    if (payload.type === 'tool_call' || payload.type === 'skill_call') {
       this.toolCount += 1
     }
-    if (payload.type === 'tool_result') {
+    if (payload.type === 'tool_result' || payload.type === 'skill_result') {
       const result = payload.result || {}
-      if (result.ok === false) this.failedToolCount += 1
+      const failed = payload.type === 'skill_result' ? payload.ok === false : result.ok === false
+      if (failed) this.failedToolCount += 1
       if (result.requires_approval) this.approvalCount += 1
     }
     if (payload.type === 'checkpoint_saved') {
@@ -79,7 +85,7 @@ export const sessionStore = reactive({
   },
 
   currentTodoText() {
-    if (!this.todos.length) return '(none yet)'
+    if (!this.todos.length) return '(暂无)'
     const counts = {}
     for (const todo of this.todos) {
       const status = todo.status || 'pending'

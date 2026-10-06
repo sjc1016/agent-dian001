@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 import shutil
@@ -115,6 +116,56 @@ class CheckpointManager:
             },
             "resume_command": resume_command(self.workspace),
         }
+
+
+class _WorkspaceRuntime:
+    """``CheckpointManager`` 所需的最小运行时契约（只需要工作区与检查点模式）。
+
+    原生 async 会话路径没有完整的 ``RuntimeState``，用本适配对象即可复用同步实现，
+    避免为异步链路重写一套检查点逻辑。
+    """
+
+    def __init__(self, workspace: Path, checkpoint_mode: str) -> None:
+        self.workspace = workspace
+        self.checkpoint_mode = checkpoint_mode
+
+
+class SessionCheckpointManager:
+    """为原生 async 会话路径提供检查点持久化（复用同步 :class:`CheckpointManager`）。
+
+    与 CLI/遗留工作流的区别在于落盘时机：会话路径按「回合」保存（回合开始一次、
+    正常结束一次），而不是每个图节点都保存，避免会话交互被频繁 IO 拖慢。
+    """
+
+    def __init__(self, workspace: Path, *, mode: str | None = None, task: str = "") -> None:
+        self.workspace = Path(workspace)
+        self.task = task
+        self.mode = normalize_checkpoint_mode(mode)
+        self._manager = CheckpointManager(
+            _WorkspaceRuntime(self.workspace, self.mode),
+            task=task,
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return self._manager.enabled
+
+    async def save(
+        self,
+        state: dict[str, Any],
+        *,
+        status: str = "running",
+        latest_node: str = "",
+    ) -> dict[str, Any] | None:
+        """保存检查点并返回 ``checkpoint_saved`` 事件（关闭时返回 None）。
+
+        同步实现包含工作区扫描与 git 子进程调用，卸载到线程执行以免阻塞事件循环。
+        """
+        if not self.enabled:
+            return None
+        return await asyncio.to_thread(
+            self._manager.save, state, status=status, latest_node=latest_node
+        )
 
 
 def checkpoint_saved_event(payload: dict[str, Any]) -> dict[str, Any]:

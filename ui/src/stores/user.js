@@ -41,6 +41,12 @@ export function userLabel(user) {
   return user.owner_name ? `${user.owner_name} · ${user.phone}` : user.phone
 }
 
+/** 账号在登录框中的展示名：优先用户名，其次机主姓名。 */
+export function userAccountName(user) {
+  if (!user) return ''
+  return user.username || user.owner_name || user.phone || ''
+}
+
 export function userInitial(user) {
   const name = user?.owner_name || ''
   return name ? name.slice(0, 1) : (user?.phone || '?').slice(-2)
@@ -59,6 +65,32 @@ export function loadRememberedPhone() {
     return localStorage.getItem(STORAGE_KEY) || ''
   } catch {
     return ''
+  }
+}
+
+/**
+ * 重新拉取账号列表（注册新账号后调用，保证下拉列表同步）。
+ * 返回账号数组；失败时保留原列表并记录错误。
+ */
+export async function refreshUsers() {
+  try {
+    const data = await listUsers()
+    userStore.users = data.users || []
+    userStore.error = ''
+  } catch (err) {
+    userStore.error = err.message
+  }
+  return userStore.users
+}
+
+/** 把刚登录/刚注册的账号并入候选列表（已存在则原地更新）。 */
+export function upsertUser(user) {
+  if (!user?.phone) return
+  const index = userStore.users.findIndex((item) => item.phone === user.phone)
+  if (index >= 0) {
+    userStore.users[index] = { ...userStore.users[index], ...user }
+  } else {
+    userStore.users.push({ ...user })
   }
 }
 

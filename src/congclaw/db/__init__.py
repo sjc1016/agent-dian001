@@ -8,6 +8,11 @@
 
 from __future__ import annotations
 
+from congclaw.db.baseline import (
+    DEFAULT_PACKAGE_ID,
+    backfill_account_baselines,
+    provision_account_baseline,
+)
 from congclaw.db.engine import (
     database_url,
     dispose_engine,
@@ -19,6 +24,9 @@ from congclaw.db.engine import (
 from congclaw.db.models import SessionModel
 
 __all__ = [
+    "DEFAULT_PACKAGE_ID",
+    "backfill_account_baselines",
+    "provision_account_baseline",
     "database_url",
     "dispose_engine",
     "get_engine",

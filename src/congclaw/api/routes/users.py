@@ -4,8 +4,8 @@
 业务数据，在 ``user_profile`` 中拥有独立的跨会话长期记忆，其会话则存放在
 ``.congclaw/workspaces/user-<phone>/`` 目录下互相隔离。
 
-- ``GET /api/v1/users``：列出全部演示客户（号码 + 机主姓名），
-  供前端用户切换器渲染候选项。
+- ``GET /api/v1/users``：列出全部演示客户（号码 + 用户名 + 机主姓名），
+  供前端用户切换器渲染候选项。实际切换需经 ``/api/v1/auth/login`` 校验口令。
 """
 
 from __future__ import annotations
@@ -22,5 +22,5 @@ async def list_users(limit: int = 50) -> dict:
     """列出全部在网客户；数据库为空时回退到默认演示号码，保证前端始终可用。"""
     users = await list_accounts(limit=limit)
     if not users:
-        users = [{"phone": DEFAULT_DEMO_PHONE, "owner_name": "默认用户"}]
+        users = [{"phone": DEFAULT_DEMO_PHONE, "username": "张伟", "owner_name": "默认用户"}]
     return {"total": len(users), "users": users, "default_phone": DEFAULT_DEMO_PHONE}

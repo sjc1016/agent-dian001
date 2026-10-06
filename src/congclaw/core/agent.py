@@ -11,7 +11,12 @@ from typing import Any, AsyncIterator, Iterator
 from dotenv import load_dotenv
 from langgraph.graph import add_messages
 
-from congclaw.core.checkpoint import CheckpointManager, load_resume_inputs, normalize_checkpoint_mode
+from congclaw.core.checkpoint import (
+    CheckpointManager,
+    SessionCheckpointManager,
+    load_resume_inputs,
+    normalize_checkpoint_mode,
+)
 from congclaw.core.paths import default_workspace
 from congclaw.core.session import (
     aload_or_create_session,
@@ -198,6 +203,12 @@ async def _stream_session_events_native(
         task=task or "",
         mode=trace_mode or os.getenv("CONG_TRACE_MODE", "on"),
     )
+    # 会话检查点：按回合保存，供中断恢复与右侧面板展示（CONG_CHECKPOINT_MODE=off 可关）
+    checkpoint = SessionCheckpointManager(
+        workspace,
+        mode=checkpoint_mode or os.getenv("CONG_CHECKPOINT_MODE", "light"),
+        task=task or "",
+    )
     session = await aload_or_create_session(workspace)
     resumed = resume_workspace is not None
     started_event = session_started_event(workspace, session, resumed=resumed)
@@ -206,7 +217,9 @@ async def _stream_session_events_native(
     yield {"type": "workspace", "path": str(workspace)}
 
     if not task:
-        await trace.end(status="finished")
+        trace_event = await trace.end(status="finished")
+        if trace_event:
+            yield {"type": "custom_event", "event": trace_event}
         return
 
     # 阶段 5（P5-8）：按手机号装载跨会话长期用户摘要，注入长期记忆层
@@ -232,6 +245,17 @@ async def _stream_session_events_native(
     turn_started_event = session_turn_started_event(workspace, session, turn=turn, task=task)
     await trace.record_event(turn_started_event)
     yield {"type": "custom_event", "event": turn_started_event}
+
+    # 会话检查点（回合开始）：先落一次盘，进程中断后可据此恢复本轮任务
+    checkpoint_event = await checkpoint.save(
+        {"task": task or "", "attempts": 0, "max_attempts": max_attempts, "todos": []},
+        status="running",
+        latest_node="entry_graph",
+    )
+    if checkpoint_event:
+        await trace.record_event(checkpoint_event)
+        yield {"type": "custom_event", "event": checkpoint_event}
+
     session_context = await asyncio.to_thread(build_session_context, workspace, session)
 
     entry_state: dict[str, Any] = {
@@ -256,6 +280,9 @@ async def _stream_session_events_native(
 
     route = "workflow"
     trace_status = "finished"
+    # trace_summary 是否已显式补发给前端；未补发时由 finally 兜底仅落盘，
+    # 避免在客户端断开（GeneratorExit）场景下 yield 触发 RuntimeError
+    trace_summary_sent = False
     try:
         try:
             async for mode, event in build_entry_workflow().astream(
@@ -300,6 +327,25 @@ async def _stream_session_events_native(
             saved_event = session_turn_saved_event(workspace, session, turn=turn, route="workflow")
             await trace.record_event(saved_event)
             yield {"type": "custom_event", "event": saved_event}
+            # 会话检查点（回合结束）：落盘本轮结果，供中断恢复与右侧面板展示
+            checkpoint_event = await checkpoint.save(
+                {
+                    "task": task or "",
+                    "attempts": 0,
+                    "max_attempts": max_attempts,
+                    "answer": final_answer,
+                    "route": "workflow",
+                },
+                status="finished",
+                latest_node="workflow",
+            )
+            if checkpoint_event:
+                await trace.record_event(checkpoint_event)
+                yield {"type": "custom_event", "event": checkpoint_event}
+            trace_summary_sent = True
+            trace_event = await trace.end(status=trace_status)
+            if trace_event:
+                yield {"type": "custom_event", "event": trace_event}
             return
 
         # 五类意图全部在入口图内完成（rag_answer / agent_loop / clarify / fallback）
@@ -339,8 +385,32 @@ async def _stream_session_events_native(
                 err_event = {"type": "profile_update_error", "error": f"{type(exc).__name__}: {exc}"}
                 await trace.record_event(err_event)
                 yield {"type": "custom_event", "event": err_event}
+
+        # 会话检查点（回合结束）：落盘本轮结果，供中断恢复与右侧面板展示
+        checkpoint_event = await checkpoint.save(
+            {
+                "task": task or "",
+                "attempts": 0,
+                "max_attempts": max_attempts,
+                "answer": response,
+                "route": route,
+                "session_turn": turn,
+            },
+            status="finished",
+            latest_node=f"entry_graph:{route}",
+        )
+        if checkpoint_event:
+            await trace.record_event(checkpoint_event)
+            yield {"type": "custom_event", "event": checkpoint_event}
+
+        # 会话正常结束：补发追踪摘要（含 trace_dir），右侧面板据此显示追踪目录
+        trace_summary_sent = True
+        trace_event = await trace.end(status=trace_status)
+        if trace_event:
+            yield {"type": "custom_event", "event": trace_event}
     finally:
-        await trace.end(status=trace_status)
+        if not trace_summary_sent:
+            await trace.end(status=trace_status)
 
 
 def _profile_auto_compress() -> bool:

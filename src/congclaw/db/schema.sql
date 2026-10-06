@@ -45,9 +45,14 @@ CREATE INDEX IF NOT EXISTS idx_chunk_meta_position ON chunk_meta(position);
 
 -- 阶段 4：电信模拟业务表（接口形态对齐真实 BOSS/CRM，数据为本地演示种子）
 -- 账户：话费余额与实时话费
+-- username / password_hash 列为阶段 6（登录鉴权）新增：登录账号支持「手机号或用户名」，
+-- 口令以 PBKDF2-HMAC-SHA256 加盐哈希存储（见 congclaw.core.security），不落明文。
+-- 存量为空时由 init_db 迁移回填 username=owner_name、password_hash=默认口令 123456。
 CREATE TABLE IF NOT EXISTS account (
     phone           TEXT PRIMARY KEY,
     owner_name      TEXT NOT NULL DEFAULT '',
+    username        TEXT NOT NULL DEFAULT '',    -- 登录用户名，全局唯一（空串表示未设置）
+    password_hash   TEXT NOT NULL DEFAULT '',    -- 口令哈希串
     balance         REAL NOT NULL DEFAULT 0.0,   -- 账户可用余额（元）
     real_time_fee   REAL NOT NULL DEFAULT 0.0,   -- 本月实时话费（元）
     bill_cycle      TEXT NOT NULL DEFAULT '',    -- 当前账期，如 2026-09
@@ -125,14 +130,15 @@ CREATE TABLE IF NOT EXISTS user_profile (
 );
 
 -- 演示种子数据（INSERT OR IGNORE：幂等建库不覆盖用户改动）
-INSERT OR IGNORE INTO account (phone, owner_name, balance, real_time_fee, bill_cycle, updated_at)
-VALUES ('13800138000', '张伟', 86.50, 113.50, '2026-09', '2026-09-30T08:00:00+00:00');
+-- username 取机主姓名，便于用「用户名」登录演示；password_hash 由 init_db 统一回填默认口令
+INSERT OR IGNORE INTO account (phone, owner_name, username, balance, real_time_fee, bill_cycle, updated_at)
+VALUES ('13800138000', '张伟', '张伟', 86.50, 113.50, '2026-09', '2026-09-30T08:00:00+00:00');
 
 -- 多用户演示种子：用于验证「切换用户 → 会话与记忆互相隔离」的能力
-INSERT OR IGNORE INTO account (phone, owner_name, balance, real_time_fee, bill_cycle, updated_at)
+INSERT OR IGNORE INTO account (phone, owner_name, username, balance, real_time_fee, bill_cycle, updated_at)
 VALUES
-    ('13900139000', '李娜', 45.20, 88.00, '2026-09', '2026-09-30T08:00:00+00:00'),
-    ('13700137000', '王强', 152.80, 76.40, '2026-09', '2026-09-30T08:00:00+00:00');
+    ('13900139000', '李娜', '李娜', 45.20, 88.00, '2026-09', '2026-09-30T08:00:00+00:00'),
+    ('13700137000', '王强', '王强', 152.80, 76.40, '2026-09', '2026-09-30T08:00:00+00:00');
 
 INSERT OR IGNORE INTO package_catalog
     (package_id, name, monthly_fee, data_quota_gb, voice_minutes, broadband_mbps, description, active)

@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar.vue'
 import SessionPanel from './components/SessionPanel.vue'
 import ApprovalDialog from './components/ApprovalDialog.vue'
 import UserSwitcher from './components/UserSwitcher.vue'
+import AuthDialog from './components/AuthDialog.vue'
 import { sessionStore } from './stores/session.js'
 import {
   userStore,
@@ -13,9 +14,12 @@ import {
   newSessionWorkspace,
   loadAndResolveUser,
   rememberUserPhone,
+  refreshUsers,
+  upsertUser,
 } from './stores/user.js'
 import { streamChat } from './api/chat.js'
 import { getSession } from './api/sessions.js'
+import { listSkills } from './api/skills.js'
 import {
   summarizeEvent,
   shouldHideEvent,
@@ -34,6 +38,10 @@ const approvalRequest = ref(null)
 const approvalResolver = ref(null)
 const currentController = ref(null)
 const chatViewRef = ref(null)
+// 账号登录/注册弹窗：切换用户必须先通过口令校验
+const authVisible = ref(false)
+const authMode = ref('login')
+const authPrefill = ref('')
 
 const isRunning = computed(() => running.value)
 // 当前用户的工作区前缀：用于按用户过滤历史会话
@@ -117,8 +125,9 @@ function startNewSession() {
 /**
  * 切换当前用户：重置会话状态，并为其分配独立工作区。
  * 由于工作区按 ``user-<phone>/`` 前缀隔离，历史会话与长期记忆都不会串号。
+ * ``loginNotice`` 用于登录/注册成功时替换默认的「已切换用户」提示。
  */
-function applyUser(user, { clearConversation = true } = {}) {
+function applyUser(user, { clearConversation = true, loginNotice = null } = {}) {
   if (!user) return
   resetState()
   userStore.current = user
@@ -129,14 +138,50 @@ function applyUser(user, { clearConversation = true } = {}) {
   if (clearConversation) {
     turns.value = []
     notices.value = []
-    pushNotice('已切换用户', `当前身份：${userLabel(user)}`, 'info', false)
+    if (loginNotice) {
+      pushNotice(loginNotice.title, loginNotice.body, loginNotice.category || 'info', false)
+    } else {
+      pushNotice('已切换用户', `当前身份：${userLabel(user)}`, 'info', false)
+    }
     pushWelcome()
   }
 }
 
-function onSwitchUser(user) {
-  if (user.phone === userStore.current?.phone) return
-  applyUser(user)
+/**
+ * 打开登录弹窗：user 为空表示「登录其他账号」（不预填），
+ * 否则预填所选账号（用户名优先，其次号码）。
+ */
+function openAuth(user = null) {
+  authMode.value = 'login'
+  authPrefill.value = user ? user.username || user.phone || '' : ''
+  authVisible.value = true
+}
+
+function openRegister() {
+  authMode.value = 'register'
+  authPrefill.value = ''
+  authVisible.value = true
+}
+
+/**
+ * 登录/注册成功：把账号并入候选列表并切换身份；
+ * 注册场景额外刷新列表，保证新账号在数据库中已可见。
+ */
+async function onAuthSuccess(user) {
+  if (!user?.phone) return
+  const isNewAccount = !userStore.users.some((item) => item.phone === user.phone)
+  authVisible.value = false
+  upsertUser(user)
+  applyUser(user, {
+    loginNotice: isNewAccount
+      ? {
+          title: '注册并登录成功',
+          body: `新账号 ${userLabel(user)} 已写入账号数据库，可独立拥有会话与记忆。`,
+          category: 'success',
+        }
+      : { title: '登录成功', body: `当前身份：${userLabel(user)}`, category: 'success' },
+  })
+  if (isNewAccount) await refreshUsers()
 }
 
 function handleCommand(text) {
@@ -315,10 +360,20 @@ function handleKeydown(e) {
   }
 }
 
+/** 拉取注册中心的 Skill 总数，供右侧面板「已注册技能」展示；失败静默降级为 0。 */
+async function loadSkillCount() {
+  try {
+    const data = await listSkills()
+    sessionStore.skillCount = Number(data.total) || 0
+  } catch {
+    sessionStore.skillCount = 0
+  }
+}
+
 onMounted(async () => {
   window.addEventListener('keydown', handleKeydown)
-  // 先解析当前用户（接口不可用时回退到默认演示号码），再初始化其专属会话
-  const user = await loadAndResolveUser()
+  // 技能清单与当前用户并行拉取（技能数是全局信息，不随用户切换变化）
+  const [user] = await Promise.all([loadAndResolveUser(), loadSkillCount()])
   applyUser(user, { clearConversation: false })
   pushWelcome()
 })
@@ -350,7 +405,7 @@ onUnmounted(() => {
         <div class="subtitle">电信客服智能体 Web UI</div>
       </div>
       <div class="actions">
-        <UserSwitcher @switch="onSwitchUser" />
+        <UserSwitcher @request-login="openAuth" @request-register="openRegister" />
         <button @click="showSessions = true">Sessions</button>
         <button @click="clearAll">Clear</button>
       </div>
@@ -381,6 +436,14 @@ onUnmounted(() => {
     <ApprovalDialog
       :request="approvalRequest"
       @resolve="onApprovalResolved"
+    />
+
+    <AuthDialog
+      :visible="authVisible"
+      :initial-mode="authMode"
+      :prefill="authPrefill"
+      @close="authVisible = false"
+      @success="onAuthSuccess"
     />
   </div>
 </template>

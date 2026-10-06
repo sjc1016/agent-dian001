@@ -1,8 +1,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { userStore, userInitial, userLabel } from '../stores/user.js'
+import { userStore, userInitial } from '../stores/user.js'
 
-const emit = defineEmits(['switch'])
+const emit = defineEmits(['request-login', 'request-register'])
 
 const open = ref(false)
 const rootRef = ref(null)
@@ -14,13 +14,18 @@ function toggle() {
   open.value = !open.value
 }
 
-function select(user) {
-  if (user.phone === current.value?.phone) {
-    open.value = false
-    return
-  }
-  emit('switch', user)
+/**
+ * 点击某个已注册账号：不再直接切换身份，而是带出该账号进入登录校验
+ * （账号口令正确后才切换用户与会话空间）。
+ */
+function requestLogin(user) {
   open.value = false
+  emit('request-login', user)
+}
+
+function requestRegister() {
+  open.value = false
+  emit('request-register')
 }
 
 function onClickOutside(event) {
@@ -36,7 +41,7 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
     <button class="switcher-btn" :class="{ open }" @click="toggle">
       <span class="avatar">{{ userInitial(current) }}</span>
       <span class="who">
-        <span class="who-name">{{ current?.owner_name || '未选择用户' }}</span>
+        <span class="who-name">{{ current?.owner_name || '未登录' }}</span>
         <span class="who-phone">{{ current?.phone || '—' }}</span>
       </span>
       <span class="caret">▾</span>
@@ -44,8 +49,8 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
 
     <div v-if="open" class="dropdown">
       <div class="dropdown-header">
-        <span>切换用户</span>
-        <span class="dropdown-count">{{ users.length }} 位客户</span>
+        <span>切换账号</span>
+        <span class="dropdown-count">{{ users.length }} 个已注册</span>
       </div>
       <div class="dropdown-list">
         <button
@@ -53,21 +58,31 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
           :key="user.phone"
           class="dropdown-item"
           :class="{ active: user.phone === current?.phone }"
-          @click="select(user)"
+          @click="requestLogin(user)"
         >
           <span class="avatar small">{{ userInitial(user) }}</span>
           <span class="item-text">
-            <span class="item-name">{{ user.owner_name || '未知客户' }}</span>
-            <span class="item-phone">{{ user.phone }}</span>
+            <span class="item-name">{{ user.owner_name || user.username || '未知账号' }}</span>
+            <span class="item-phone">
+              <template v-if="user.username && user.username !== user.owner_name">
+                {{ user.username }} ·
+              </template>
+              {{ user.phone }}
+            </span>
           </span>
-          <span v-if="user.phone === current?.phone" class="check">✓</span>
+          <span v-if="user.phone === current?.phone" class="check">✓ 当前</span>
+          <span v-else class="login-hint">登录</span>
         </button>
         <div v-if="!users.length" class="dropdown-empty">
-          {{ userStore.loading ? '加载中...' : '暂无可用用户' }}
+          {{ userStore.loading ? '加载中...' : '暂无已注册账号' }}
         </div>
       </div>
       <div v-if="userStore.error" class="dropdown-error">{{ userStore.error }}</div>
-      <div class="dropdown-footer">切换后进入该用户独立的会话与记忆空间</div>
+      <div class="dropdown-actions">
+        <button class="action-btn" @click="requestLogin(null)">登录其他账号</button>
+        <button class="action-btn primary" @click="requestRegister">注册新账号</button>
+      </div>
+      <div class="dropdown-footer">切换账号需校验密码；各账号会话与记忆互相隔离</div>
     </div>
   </div>
 </template>
@@ -142,8 +157,8 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  width: 264px;
-  /* 限制整体高度并让列表成为唯一的滚动区，避免末项被底部提示文案遮挡 */
+  width: 288px;
+  /* 限制整体高度并让列表成为唯一的滚动区，避免末项被底部操作区遮挡 */
   max-height: calc(100vh - 140px);
   display: flex;
   flex-direction: column;
@@ -226,7 +241,18 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
 
 .check {
   color: var(--accent);
-  font-size: 13px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.login-hint {
+  color: var(--text-subtle);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.dropdown-item:hover .login-hint {
+  color: var(--accent);
 }
 
 .dropdown-empty,
@@ -239,6 +265,35 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
 
 .dropdown-error {
   color: var(--error);
+}
+
+.dropdown-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.action-btn {
+  flex: 1;
+  padding: 6px 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.action-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.action-btn.primary {
+  border-color: var(--accent-dim);
+  color: var(--accent);
 }
 
 .dropdown-footer {
