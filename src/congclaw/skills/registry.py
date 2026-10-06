@@ -161,7 +161,7 @@ class SkillRegistry:
         return report
 
     def _load_file(self, path: Path) -> Skill:
-        unique_name = f"_mokio_skill_{path.stem}_{abs(hash((str(path), path.stat().st_mtime_ns)))}"
+        unique_name = f"_cong_skill_{path.stem}_{abs(hash((str(path), path.stat().st_mtime_ns)))}"
         spec = importlib.util.spec_from_file_location(unique_name, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"无法为 {path} 创建模块 spec")

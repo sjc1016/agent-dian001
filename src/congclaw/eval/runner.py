@@ -48,7 +48,7 @@ def prune_eval_workspaces(
         return []
 
     candidates: list[tuple[float, Path]] = []
-    for path in root.glob("mokio-eval-*"):
+    for path in root.glob("cong-eval-*"):
         if not path.is_dir():
             continue
         try:
@@ -86,7 +86,7 @@ async def run_evaluation(
       （临时目录场景下只保留最近 :data:`WORKSPACE_KEEP` 次，更早的自动清理）
     """
     samples = dataset if dataset is not None else get_dataset()
-    base = Path(base_workspace) if base_workspace else Path(tempfile.mkdtemp(prefix="mokio-eval-"))
+    base = Path(base_workspace) if base_workspace else Path(tempfile.mkdtemp(prefix="cong-eval-"))
     base.mkdir(parents=True, exist_ok=True)
 
     report = EvalReport(

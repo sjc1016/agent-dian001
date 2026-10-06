@@ -44,7 +44,7 @@ const statusText = computed(() => {
     </div>
 
     <div class="message assistant-message">
-      <div class="message-label">Mokio Agent</div>
+      <div class="message-label">Cong Agent</div>
       <div v-if="turn.answer" class="message-bubble assistant-bubble">{{ turn.answer }}</div>
       <div v-else-if="statusText" class="message-bubble assistant-bubble placeholder">{{ statusText }}</div>
       <div v-else class="message-bubble assistant-bubble placeholder">未获取到回复</div>

@@ -49,7 +49,7 @@ function pushNotice(title, body, category = 'info', collapsed = true, detail = n
 function pushWelcome() {
   const who = userStore.current
   pushNotice(
-    'Mokio Agent',
+    'Cong Agent',
     who
       ? `当前用户：${userLabel(who)}。可以直接提问，也可以用 /new 开启新会话。`
       : '电信客服智能体已就绪。可以直接提问，也可以用 /new 开启新会话。',
@@ -334,16 +334,16 @@ onUnmounted(() => {
     <header class="top-bar">
       <div class="logo-block">
         <pre class="logo">
- ███╗   ███╗ ██████╗ ██╗  ██╗██╗ ██████╗
- ████╗ ████║██╔═══██╗██║ ██╔╝██║██╔═══██╗
- ██╔████╔██║██║   ██║█████╔╝ ██║██║   ██║
- ██║╚██╔╝██║██║   ██║██╔═██╗ ██║██║   ██║
- ██║ ╚═╝ ██║╚██████╔╝██║  ██╗██║╚██████╔╝
- ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝ ╚═════╝
+ ██████╗  ██████╗ ███╗   ██╗ ██████╗
+██╔════╝ ██╔═══██╗████╗  ██║██╔════╝
+██║      ██║   ██║██╔██╗ ██║██║  ███╗
+██║      ██║   ██║██║╚██╗██║██║   ██║
+╚██████╗ ╚██████╔╝██║ ╚████║╚██████╔╝
+ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝
         </pre>
       </div>
       <div class="title-block">
-        <h1>Mokio Agent</h1>
+        <h1>Cong Agent</h1>
         <div class="status" :class="{ running: isRunning }">
           {{ isRunning ? 'running' : 'ready' }}
         </div>

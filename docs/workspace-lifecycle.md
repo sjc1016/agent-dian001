@@ -5,7 +5,7 @@
 案例 workspace：
 
 ```text
-/home/cong/projects/MokioAgent/.congclaw/workspaces/workspace-20260522-213832-37ddbd
+/home/cong/projects/CongAgent/.congclaw/workspaces/workspace-20260522-213832-37ddbd
 ```
 
 用户任务：

@@ -227,7 +227,7 @@ curl http://127.0.0.1:8000/api/v1/eval/reports/{id}     # 报告详情
 ## 目录结构
 
 ```text
-MokioAgent/
+CongAgent/
 ├─ src/congclaw/
 │  ├─ api/            # FastAPI app、路由（chat/skills/knowledge/eval）、依赖注入
 │  ├─ graph/          # 客服对话主图：state/nodes/workflow/memory/profile_store

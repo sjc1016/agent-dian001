@@ -789,7 +789,7 @@ def test_prune_eval_workspaces_keeps_recent(tmp_path: Path) -> None:
     from congclaw.eval.runner import prune_eval_workspaces
 
     for i in range(5):
-        run_dir = tmp_path / f"mokio-eval-{i}"
+        run_dir = tmp_path / f"cong-eval-{i}"
         run_dir.mkdir()
         (run_dir / "events.jsonl").write_text("{}", encoding="utf-8")
         os.utime(run_dir, (1000 + i, 1000 + i))  # 制造新旧顺序
@@ -799,11 +799,11 @@ def test_prune_eval_workspaces_keeps_recent(tmp_path: Path) -> None:
 
     removed = prune_eval_workspaces(keep=3, temp_root=tmp_path)
 
-    assert sorted(p.name for p in removed) == ["mokio-eval-0", "mokio-eval-1"]
+    assert sorted(p.name for p in removed) == ["cong-eval-0", "cong-eval-1"]
     assert sorted(p.name for p in tmp_path.iterdir()) == [
-        "mokio-eval-2",
-        "mokio-eval-3",
-        "mokio-eval-4",
+        "cong-eval-2",
+        "cong-eval-3",
+        "cong-eval-4",
         "not-eval-output",
     ]
     assert unrelated.exists()
@@ -813,9 +813,9 @@ def test_prune_eval_workspaces_noop_within_keep(tmp_path: Path) -> None:
     """未超过保留数量时不做任何删除。"""
     from congclaw.eval.runner import prune_eval_workspaces
 
-    (tmp_path / "mokio-eval-only").mkdir()
+    (tmp_path / "cong-eval-only").mkdir()
     assert prune_eval_workspaces(keep=3, temp_root=tmp_path) == []
-    assert (tmp_path / "mokio-eval-only").exists()
+    assert (tmp_path / "cong-eval-only").exists()
     # 目录不存在时也不报错
     assert prune_eval_workspaces(keep=3, temp_root=tmp_path / "missing") == []
 

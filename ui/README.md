@@ -1,4 +1,4 @@
-# Mokio Agent Web UI
+# Cong Agent Web UI
 
 将原本的 TUI（Textual）终端界面替换为 Vue 3 网页前端，保留一致的深色主题、事件流展示、会话管理和实时 SSE 对话能力。
 

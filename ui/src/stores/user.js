@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 import { listUsers } from '../api/users.js'
 
-const STORAGE_KEY = 'mokio.currentUserPhone'
+const STORAGE_KEY = 'cong.currentUserPhone'
 
 // 兜底用户：后端未启动时保证界面仍可交互
 const FALLBACK_USER = { phone: '13800138000', owner_name: '张伟' }

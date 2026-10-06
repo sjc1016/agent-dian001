@@ -966,7 +966,7 @@ def _fallback_compression(state: CongGraphState, *, error: str = "") -> dict[str
 
 def _format_compressed_context(compressed: dict[str, Any], state: CongGraphState) -> str:
     payload = {
-        "type": "mokio_context_summary",
+        "type": "cong_context_summary",
         "task": state.get("task", ""),
         "plan_summary": state.get("plan_summary", ""),
         "todos": state.get("todos", []),

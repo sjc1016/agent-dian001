@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MokioAgent LangGraph 全流程思维导图</title>
+  <title>CongAgent LangGraph 全流程思维导图</title>
 
   <style>
     /* === Font faces — filled by agent per chosen theme === */
@@ -365,7 +365,7 @@
       <div class="report-intro__surface">
         <div class="report-intro__content">
           <span class="eyebrow">LangGraph Architecture Map</span>
-          <h1>MokioAgent 全流程思维导图：从 LangGraph 视角解构电信客服智能体</h1>
+          <h1>CongAgent 全流程思维导图：从 LangGraph 视角解构电信客服智能体</h1>
           <p class="report-intro__summary">
             整个系统被压缩进一张融合总图：外层是「入口主图 + 两张能力子图」的三级编排，<code>intent_router</code> 是唯一的调度枢纽，<code>rag_answer</code> 与 <code>agent_loop</code> 两个节点各自展开为一张完整的子图拓扑，快慢两条路径在一张图内一次看完。
           </p>
@@ -378,7 +378,7 @@
         <section id="overview">
           <h2>一、全局思维导图</h2>
           <p class="lead">
-            MokioAgent 的分层不是目录分层，而是 LangGraph 的「图 → 子图 → 节点」三级编排分层。下图把六层能力收敛到同一张思维导图：编排层是唯一有状态机的部分，能力层则是两张被主图动态调度的子图。
+            CongAgent 的分层不是目录分层，而是 LangGraph 的「图 → 子图 → 节点」三级编排分层。下图把六层能力收敛到同一张思维导图：编排层是唯一有状态机的部分，能力层则是两张被主图动态调度的子图。
           </p>
 
           <figure class="figure">
@@ -393,7 +393,7 @@
     'fontFamily': 'PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif'
 }}}%%
 mindmap
-    root((MokioAgent 全流程))
+    root((CongAgent 全流程))
         接入层
             FastAPI 应用装配
             POST chat 转 SSE
@@ -437,7 +437,7 @@ mindmap
             LLMJudge 评审
             Report 报表
             </pre>
-            <figcaption>图 1　MokioAgent 六层能力全景思维导图（LangGraph 视角）</figcaption>
+            <figcaption>图 1　CongAgent 六层能力全景思维导图（LangGraph 视角）</figcaption>
           </figure>
         </section>
 
