@@ -5,8 +5,6 @@ import { sessionStore } from '../stores/session.js'
 // 面板文案面向业务演示统一使用中文；括号内为对应的后端术语
 const status = computed(() => (sessionStore.running ? '运行中' : '就绪'))
 const workspace = computed(() => sessionStore.workspace || '(等待中)')
-const checkpoint = computed(() => sessionStore.checkpoint || '(等待中)')
-const trace = computed(() => sessionStore.trace || '(等待中)')
 // 能力维度（skills）：注册中心已加载的 Skill 数量，即 Agent 当前可用的业务能力
 const skills = computed(() => `${sessionStore.skillCount} 个`)
 // 调用维度（tools）：本轮技能/工具的实际调用次数与失败数；
@@ -27,8 +25,6 @@ const rows = computed(() => [
   { label: '会话', value: sessionStore.sessionId ? sessionStore.sessionId.slice(0, 24) : '(启动中)' },
   { label: '路由', value: sessionStore.route || '(无)' },
   { label: '工作区', value: workspace.value },
-  { label: '检查点', value: checkpoint.value },
-  { label: '追踪', value: trace.value },
   { label: '已注册技能', value: skills.value },
   { label: '技能调用', value: tools.value },
   { label: '待确认', value: approvals.value },

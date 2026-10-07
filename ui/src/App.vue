@@ -6,6 +6,8 @@ import SessionPanel from './components/SessionPanel.vue'
 import ApprovalDialog from './components/ApprovalDialog.vue'
 import UserSwitcher from './components/UserSwitcher.vue'
 import AuthDialog from './components/AuthDialog.vue'
+import AdminLoginDialog from './components/AdminLoginDialog.vue'
+import AdminPanel from './components/AdminPanel.vue'
 import { sessionStore } from './stores/session.js'
 import {
   userStore,
@@ -42,6 +44,9 @@ const chatViewRef = ref(null)
 const authVisible = ref(false)
 const authMode = ref('login')
 const authPrefill = ref('')
+// 管理员入口：先验证管理员密码，通过后进入后台管理界面
+const adminLoginVisible = ref(false)
+const adminPanelVisible = ref(false)
 
 const isRunning = computed(() => running.value)
 // 当前用户的工作区前缀：用于按用户过滤历史会话
@@ -161,6 +166,17 @@ function openRegister() {
   authMode.value = 'register'
   authPrefill.value = ''
   authVisible.value = true
+}
+
+/** 管理员入口：弹出管理员密码验证弹窗。 */
+function openAdminLogin() {
+  adminLoginVisible.value = true
+}
+
+/** 管理员密码验证通过：关闭验证弹窗，进入后台管理界面。 */
+function onAdminSuccess() {
+  adminLoginVisible.value = false
+  adminPanelVisible.value = true
 }
 
 /**
@@ -358,6 +374,11 @@ function handleKeydown(e) {
     e.preventDefault()
     showSessions.value = true
   }
+  // Esc 逐层退出：管理界面 → 管理员/账号弹窗
+  if (e.key === 'Escape') {
+    if (adminPanelVisible.value) adminPanelVisible.value = false
+    else if (adminLoginVisible.value) adminLoginVisible.value = false
+  }
 }
 
 /** 拉取注册中心的 Skill 总数，供右侧面板「已注册技能」展示；失败静默降级为 0。 */
@@ -406,6 +427,7 @@ onUnmounted(() => {
       </div>
       <div class="actions">
         <UserSwitcher @request-login="openAuth" @request-register="openRegister" />
+        <button class="admin-btn" @click="openAdminLogin">管理员</button>
         <button @click="showSessions = true">Sessions</button>
         <button @click="clearAll">Clear</button>
       </div>
@@ -444,6 +466,17 @@ onUnmounted(() => {
       :prefill="authPrefill"
       @close="authVisible = false"
       @success="onAuthSuccess"
+    />
+
+    <AdminLoginDialog
+      :visible="adminLoginVisible"
+      @close="adminLoginVisible = false"
+      @success="onAdminSuccess"
+    />
+
+    <AdminPanel
+      v-if="adminPanelVisible"
+      @close="adminPanelVisible = false"
     />
   </div>
 </template>
@@ -525,6 +558,16 @@ onUnmounted(() => {
 
 .actions button:hover {
   background: var(--bg-tertiary);
+}
+
+/* 管理员入口：用警示色与普通操作按钮区分 */
+.admin-btn {
+  color: var(--warning) !important;
+  border-color: var(--warning) !important;
+}
+
+.admin-btn:hover {
+  background: rgba(244, 191, 117, 0.12) !important;
 }
 
 .main {

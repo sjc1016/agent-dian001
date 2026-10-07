@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from congclaw.api.routes.admin import router as admin_router
 from congclaw.api.routes.auth import router as auth_router
 from congclaw.api.routes.chat import router as chat_router
 from congclaw.api.routes.eval import router as eval_router
@@ -65,6 +66,7 @@ app = FastAPI(
 
 app.include_router(chat_router)
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(knowledge_router)
 app.include_router(skills_router)
 app.include_router(eval_router)

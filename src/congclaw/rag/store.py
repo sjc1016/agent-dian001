@@ -211,6 +211,61 @@ async def list_sources() -> list[dict[str, Any]]:
     return [{"doc_source": source, "chunk_count": count} for source, count in rows]
 
 
+async def list_source_detail(doc_source: str) -> dict[str, Any]:
+    """单个来源的完整分片视图：子分片原样返回，父分片由同 parent_id 的子分片按序拼接。
+
+    父分片表在库中并不独立存储，检索时的 ``fetch_parent_groups`` 同样用拼接还原，
+    此处保持一致的还原口径，保证预览结果与检索实际使用的内容相同。
+    """
+    async with _connect() as connection:
+        connection.row_factory = aiosqlite.Row
+        cursor = await connection.execute(
+            "SELECT child_id, parent_id, doc_source, position, child_text"
+            " FROM chunk_meta WHERE doc_source = ? ORDER BY position, rowid",
+            (doc_source,),
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+    children = [
+        {
+            "child_id": row["child_id"],
+            "parent_id": row["parent_id"],
+            "position": row["position"],
+            "text": row["child_text"],
+            "char_count": len(row["child_text"] or ""),
+        }
+        for row in rows
+    ]
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["parent_id"], []).append(row)
+
+    parents = []
+    for parent_id, group in grouped.items():
+        ordered = sorted(group, key=lambda item: item["position"])
+        text = "".join(item["child_text"] or "" for item in ordered)
+        parents.append(
+            {
+                "parent_id": parent_id,
+                "position": ordered[0]["position"],
+                "text": text,
+                "child_count": len(ordered),
+                "char_count": len(text),
+                "child_ids": [item["child_id"] for item in ordered],
+            }
+        )
+    parents.sort(key=lambda item: item["position"])
+
+    return {
+        "doc_source": doc_source,
+        "child_count": len(children),
+        "parent_count": len(parents),
+        "children": children,
+        "parents": parents,
+    }
+
+
 async def count_chunks() -> int:
     async with _connect() as connection:
         cursor = await connection.execute("SELECT COUNT(*) FROM chunk_meta")
