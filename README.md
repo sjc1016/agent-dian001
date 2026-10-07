@@ -5,7 +5,8 @@
 <h1 align="center">电信客服智能体（基于 CongClaw 改造）</h1>
 
 <p align="center">
-  FastAPI + LangGraph 双引擎客服 Agent：RAG 快速检索保响应速度，Agent 深度推理保复杂业务处理能力。
+  FastAPI + LangGraph 双引擎客服 Agent：RAG 快速检索保响应速度，Agent 深度推理保复杂业务处理能力。<br/>
+  自带 Vue 3 Web UI，全部业务能力均可在浏览器中直接演示。
 </p>
 
 ## 项目简介
@@ -26,8 +27,9 @@
 ```text
 ┌────────────────────────────────────────────────────────────────┐
 │ 接入层                                                           │
-│   CLI / TUI 演示客户端 ──HTTP/SSE──> FastAPI 服务                 │
+│   Web UI（Vue 3）  CLI / TUI 演示客户端 ──HTTP/SSE──> FastAPI 服务 │
 │   /chat  /skills  /knowledge/ingest  /eval/run  /health         │
+│   /auth  /sessions  /users  /admin（db + rag 管理）              │
 ├────────────────────────────────────────────────────────────────┤
 │ 编排层（LangGraph 主图，全链路原生 async）                         │
 │                                                                 │
@@ -72,6 +74,8 @@
 ## 快速开始
 
 ### 1. 环境准备
+
+后端使用 [uv](https://docs.astral.sh/uv/) 管理 Python 环境（Python 3.13+）：
 
 ```bash
 uv sync
@@ -121,7 +125,9 @@ uv run python -m congclaw.rag          # 入库 knowledge/ 全部文档（8 份�
 uv run python -m congclaw.rag --stats  # 查看知识库规模
 ```
 
-### 4. 启动服务
+> 建库脚本一次性写入演示业务数据（张伟 13800138000 / 余额 86.50 / 当前套餐 5G畅享129元档 等）。
+
+### 4. 启动后端服务
 
 ```bash
 uv run uvicorn congclaw.api.main:app --host 127.0.0.1 --port 8000
@@ -133,60 +139,151 @@ uv run uvicorn congclaw.api.main:app --host 127.0.0.1 --port 8000
 curl http://127.0.0.1:8000/health
 ```
 
-### 5. 运行测试
+### 5. 启动 Web UI
+
+另开一个终端：
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+浏览器打开终端输出的地址（默认 `http://localhost:5173/`，端口被占用时 Vite 会自动递增，以终端输出为准）。前端通过 Vite 代理把 `/api` 转发到 `http://127.0.0.1:8000`，因此**后端必须先启动**。
+
+### 6. 运行测试
 
 ```bash
 uv run pytest -q        # 225 条全绿
 ```
 
-## 四类业务演示剧本
+## 界面一览
 
-服务启动后，CLI 作为 HTTP/SSE 客户端接入（默认 `http://127.0.0.1:8000`）。演示号码为种子用户 **13800138000**（张伟，5G畅享129元档）。
+打开 `http://localhost:5173/` 即可看到主界面：顶部是品牌区与账号/会话/清空操作，中间是对话区（用户提问 + 思考过程折叠卡 + Agent 回复气泡），右侧是实时 Session 面板（用户、状态、轮次、会话 ID、路由、工作区、已注册技能、技能调用次数、待确认、待办）。
 
-### 剧本 1：余额查询（Agent 单工具）
+<img src="docs/images/ui/01-home.png" alt="Web UI 主界面" width="900" />
 
-```bash
-uv run congclaw "帮我查一下话费余额"
-```
+## 功能演示（分步界面截图）
 
-链路：意图分流 `agent_service` → think 决定调 `query_balance` → 返回余额 86.50 元 → reflect 校验通过。
+以下截图均在演示号码 **13800138000（张伟）** 上按顺序实操录制。
 
-### 剧本 2：套餐咨询（RAG 检索）
+### 1. 账号体系：切换用户 / 登录 / 注册
 
-```bash
-uv run congclaw "5G畅享套餐包含多少流量？"
-```
+系统内置 8 个演示账号，每个账号拥有**独立的工作区、会话与长期记忆**，互不串号。
 
-链路：意图分流 `rag_query` → BM25 ∥ 稠密并行召回 → RRF 融合 → Cross-Encoder 精排 → 父分片回溯 → 生成答案并附来源片段编号。
+**① 展开账号下拉**：点击右上角用户区，可见全部已注册账号，"张伟"当前身份带 `✓ 当前` 标记。
 
-### 剧本 3：故障报修（Agent 多工具并行）
+<img src="docs/images/ui/02-user-switcher.png" alt="账号下拉" width="900" />
 
-```bash
-uv run congclaw "我家宽带从昨天开始断网，帮我报修"
-```
+**② 打开登录弹窗**：点击「登录其他账号」。
 
-链路：`report_fault` 建单 + `query_fault_status` 查进度（`asyncio.gather` 并行）→ 返回工单号。
+<img src="docs/images/ui/03-login-dialog.png" alt="登录弹窗" width="900" />
 
-### 剧本 4：套餐变更（含人工确认）
+**③ 输入凭据**：支持手机号或用户名登录，演示账号默认密码 `123456`。
 
-```bash
-uv run congclaw tui
-# 第 1 轮：5G畅享199元档套餐怎么样
-# 第 2 轮：那这个多少钱        ← 指代消解重写为完整问句
-# 第 3 轮：帮我办这个          ← 路由到办理 Agent，槽位自动带出套餐名，推送确认卡片
-# 第 4 轮：确认办理            ← 确认后才真正执行变更
-```
+<img src="docs/images/ui/04-login-filled.png" alt="填写登录信息" width="900" />
 
-`change_package` 是写操作：执行前先落 `pending_approval` 并向用户推确认卡片，用户确认后才执行；输入"取消"则作废。审批模式支持 `inline`（默认询问）/ `auto`（自动批准，演示用）/ `deny`（一律拒绝）：
+**④ 登录成功**：顶部身份随即切换，对话区出现「登录成功」提示，并自动为该用户分配新的会话工作区。
 
-```bash
-uv run congclaw --approval-mode inline tui
-```
+<img src="docs/images/ui/05-login-success.png" alt="登录成功" width="900" />
+
+**⑤ 注册新账号**：在账号下拉中点击「注册新账号」，手机号与密码为必填项，注册成功后直接登录并写回账号数据库。
+
+<img src="docs/images/ui/06-register-dialog.png" alt="注册弹窗" width="900" />
+
+### 2. 余额查询（Agent 单工具）
+
+在输入框输入 `帮我查一下话费余额`，回车发送。
+
+意图分流 `agent_service` → think 决定调用 `query_balance` → 返回账户余额与本月实时话费 → reflect 校验通过。右侧面板同步显示轮次、会话 ID、路由 `agent_loop` 与技能调用次数。
+
+<img src="docs/images/ui/07-balance-query.png" alt="余额查询" width="900" />
+
+**展开思考过程**：点击「思考过程 19 步」可展开本轮全部中间事件（profile_loaded、query_rewrite、intent_router、agent_start、技能调用、技能返回……），每一步都可单独展开查看细节，用于演示全链路可观测性。
+
+<img src="docs/images/ui/08-thinking-expanded.png" alt="思考过程展开" width="900" />
+
+### 3. 套餐咨询（RAG 检索）
+
+输入 `5G畅享套餐包含多少流量？`。
+
+意图分流 `rag_query` → BM25 ∥ 稠密向量双路并行召回 → RRF 融合 → Cross-Encoder 精排 → 父分片回溯 → 生成答案。右侧 Session 面板的路由变为 `rag_answer`，答案中带来源片段编号。
+
+<img src="docs/images/ui/09-package-rag.png" alt="套餐咨询（RAG）" width="900" />
+
+### 4. 故障报修（追问澄清 → 建单）
+
+**① 信息不足时先追问**：输入 `我家宽带突然不能上网了，帮我报修`，槽位缺失时 Agent 不会直接建单，而是追问上门地址与故障现象（对话管控：模糊追问最多 5 轮）。
+
+<img src="docs/images/ui/10-fault-clarify.png" alt="故障报修追问" width="900" />
+
+**② 补全信息后建单**：接着输入 `地址是北京市海淀区中关村大街1号院3号楼502室，从今天早上8点开始光猫亮红灯，家里所有设备都连不上网。`，Agent 调用 `report_fault` 建单，返回工单号、故障类型、报修地址、联系电话与当前状态。
+
+<img src="docs/images/ui/11-fault-done.png" alt="故障报修建单成功" width="900" />
+
+### 5. 套餐变更（写操作 + 人工确认）
+
+`change_package` 属于高危写操作：Agent 会先落 `pending_approval` 并推送确认话术，**用户确认后**才真正执行。
+
+**① 提出办理诉求**：输入 `帮我把套餐改成199元的5G畅享套餐`，Agent 复述目标套餐与生效规则，并提示「回复『确认』继续办理，回复『取消』放弃本次变更」，此时**不会**改动数据。
+
+<img src="docs/images/ui/12-package-change-request.png" alt="套餐变更确认话术" width="900" />
+
+**② 确认后真正执行**：输入 `确认办理`，Agent 调用 `change_package` 完成变更，返回原套餐/新套餐、套餐权益、生效时间与办理状态。
+
+<img src="docs/images/ui/14-package-change-done.png" alt="套餐变更办理成功" width="900" />
+
+> ⚠️ **演示前请重置数据**：套餐变更会真实改写 `user_package` 表，重复演示时第二次会返回"当前已是该套餐，无需重复变更"。重新演示前，可在后台管理界面把 `13800138000` 改回 `P129 / 5G畅享129元档`（见下文「后台数据库管理」），或执行 `uv run python -m congclaw.db` 后手动改回种子值。
+
+### 6. 会话管理（历史会话与新建）
+
+点击顶部的 `Sessions` 按钮（或 `Ctrl+S`），可查看当前用户的全部历史会话：会话 ID、更新时间、末轮路由、轮次、末次提问，当前会话带「当前」标记。点击任意条目即可切换并回放该会话的历史消息，`+ 新建会话` 可为同一用户开启独立的工作区。
+
+<img src="docs/images/ui/15-sessions-panel.png" alt="会话列表" width="900" />
+
+### 7. 后台管理 · 数据库管理
+
+**① 管理员验证**：点击顶部橙色「管理员」按钮，输入管理员密码（演示密码 `123456`）。
+
+<img src="docs/images/ui/16-admin-login.png" alt="管理员验证" width="900" />
+
+**② 数据表浏览**：进入后台后可看到全部业务表（account、package_catalog、user_package、fault_ticket、session、user_profile、chunk_meta、pending_approval、app_meta），左侧切换表、右侧支持搜索 / 重置 / 新增一行，主键列带 `PK` 标记，每行可编辑或删除。
+
+<img src="docs/images/ui/17-admin-db.png" alt="后台数据库管理" width="900" />
+
+**③ 行编辑**：点击任意行的「编辑」，按表结构动态生成字段表单，保存后直接写回 SQLite。
+
+<img src="docs/images/ui/18-admin-db-edit.png" alt="行编辑弹窗" width="900" />
+
+### 8. 后台管理 · RAG 知识库管理
+
+**① 概览与入库**：切换到「RAG 知识库管理」页签，顶部展示 SQLite 分片数、Milvus 向量数、知识来源数；下方支持「按路径入库 / 全量入库 / 上传并入库」，并列出全部知识来源文档及其分片数。
+
+<img src="docs/images/ui/19-admin-rag.png" alt="RAG 知识库管理" width="900" />
+
+**② 分片预览**：点击任意来源行（或「查看分片」），可查看该文档的父分片与子分片全文，用于演示父子分片 RAG 的分层结构。
+
+<img src="docs/images/ui/20-admin-rag-chunks.png" alt="分片预览" width="900" />
 
 ### 对话管控演示
 
+在 Web UI 输入框中直接输入即可：
+
 - 模糊追问："我想换个更划算的" → 追问澄清，最多 5 轮，第 5 轮仍不清自动兜底。
 - 无关请求："帮我写首诗" → 直接兜底，礼貌说明服务边界并引导回四类业务。
+- 指代消解："那这个多少钱？" → 查询重写节点补全为完整问句后检索。
+
+## CLI / TUI 演示（备选接入方式）
+
+Web UI 之外，仓库仍保留 Rich CLI 与 Textual TUI 两个 HTTP/SSE 客户端，适合无浏览器环境：
+
+```bash
+uv run congclaw "帮我查一下话费余额"        # 单轮 CLI
+uv run congclaw tui                        # 多轮 TUI
+uv run congclaw --approval-mode inline tui # 指定审批策略
+```
+
+审批模式支持 `inline`（默认询问）/ `auto`（自动批准，演示用）/ `deny`（一律拒绝）。
 
 ## Skill 热插拔演示
 
@@ -218,6 +315,13 @@ curl http://127.0.0.1:8000/api/v1/eval/reports/{id}     # 报告详情
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
 | `/api/v1/chat` | POST（SSE） | 多轮对话主入口，流式返回 |
+| `/api/v1/auth/login`、`/register`、`/accounts` | POST/GET | 账号登录、注册、账号检索 |
+| `/api/v1/users` | GET | 账号列表（前端用户切换下拉） |
+| `/api/v1/sessions` | GET | 历史会话列表（支持按用户工作区前缀过滤） |
+| `/api/v1/sessions/{id}` | GET | 单会话详情（含 recent_turns，用于历史回放） |
+| `/api/v1/admin/login` | POST | 管理员口令校验 |
+| `/api/v1/admin/db/tables`、`/rows` | GET/POST/PUT/DELETE | 后台数据表浏览与增删改 |
+| `/api/v1/admin/rag/stats`、`/sources`、`/ingest`、`/upload` | GET/POST | 后台 RAG 知识库统计、来源列表、入库、上传 |
 | `/api/v1/skills` | GET/POST/DELETE | Skill 列表、热注册、热卸载 |
 | `/api/v1/knowledge/ingest` | POST | 知识库文档解析入库（另含 `/ingest/upload`、`/stats`） |
 | `/api/v1/eval/run` | POST | 触发评测流水线 |
@@ -229,7 +333,7 @@ curl http://127.0.0.1:8000/api/v1/eval/reports/{id}     # 报告详情
 ```text
 CongAgent/
 ├─ src/congclaw/
-│  ├─ api/            # FastAPI app、路由（chat/skills/knowledge/eval）、依赖注入
+│  ├─ api/            # FastAPI app、路由（chat/auth/sessions/users/skills/knowledge/eval/admin）、依赖注入
 │  ├─ graph/          # 客服对话主图：state/nodes/workflow/memory/profile_store
 │  ├─ rag/            # RAG 子图：parsing/ingest 离线入库 + state/nodes/workflow 在线检索
 │  │                  #   retrieval（BM25/稠密/精排）store（SQLite 父子分片）vectorstore（Milvus）
@@ -241,9 +345,11 @@ CongAgent/
 │  ├─ prompts/        # 意图识别/查询重写/RAG/Agent 思考与反思 prompt
 │  ├─ providers/      # ChatOpenAI 兼容 LLM 创建
 │  └─ cli/            # HTTP/SSE 演示客户端（Rich CLI + Textual TUI）
+├─ ui/                # Vue 3 + Vite Web UI（对话、账号、会话、后台管理）
 ├─ knowledge/         # 电信知识库原始文档（套餐/资费/宽带 FAQ，md/html/txt）
 ├─ models/            # BGE-M3、bge-reranker 本地模型
 ├─ data/              # telecom_cs.db、milvus_lite.db、外部 skills 目录
+├─ docs/images/ui/    # README 使用的 Web UI 分步截图
 ├─ eval/reports/      # 评测报告输出
 ├─ scripts/           # 模型下载/冒烟、Milvus Lite 验证
 └─ tests/             # 225 条用例：意图分流/RAG 子图/Skill 热插拔/记忆/评测/端到端
@@ -255,24 +361,28 @@ CongAgent/
 - **并行召回**：`START` 双出边 fan-out 到 `retrieve_bm25` / `retrieve_dense`，由 LangGraph 调度器并发执行，等价于 `asyncio.gather` 但天然进入 trace。
 - **父子分片**：Child（1~3 句）保障召回精度，命中后回溯 Parent 段落块 + 前后邻域 child 扩展 + 去重合并，保障生成上下文完整无断句。
 - **证据门校准**：reranker 概率/原始分双阈值（prob≥0.53 且 raw≥0.15，按实测分布校准），库外问题走 `rewrite_once`（限 1 次）→ `rag_fallback`，避免死循环。
+- **业务写操作人工确认**：`change_package` 标记 `requires_confirmation`，执行前落库 `pending_approval` 并向用户推送确认话术，用户回复「确认」后才真正执行；下一轮进入 `approval_resumed` 分支续跑。
+- **按用户的会话与记忆隔离**：每位用户拥有独立工作区前缀 `.congclaw/workspaces/user-<phone>/`，会话列表按前缀过滤，长期记忆按号码维度落 `user_profile`。
 - **热插拔注册中心**：`dict[路径→注销时 mtime]` 语义——内置 Skill 注销后文件内容变更自动恢复；外部 Skill 增删改经 watcher 轮询即生效。
 - **性能**：本地 CPU 热身后单轮检索中位 2.06s / P95 2.41s（`RAG_RERANK_INPUT_TOP_N=8`）；首次冷启动约 32s 已由服务启动后台预热消除。调 `RAG_RERANK_INPUT_TOP_N=6` 可压到约 1.7s（弱相关问召回略有损失），或上 GPU/ONNX 量化进一步压缩。
 
 ## 演示彩排路径
 
 ```bash
-# 1. 起服务
-uv run uvicorn congclaw.api.main:app
+# 1. 起后端
+uv run uvicorn congclaw.api.main:app --host 127.0.0.1 --port 8000
 
-# 2. CLI 演示四类业务（另开终端）
-uv run congclaw "帮我查一下话费余额"
-uv run congclaw "5G畅享套餐包含多少流量？"
-uv run congclaw "我家宽带断网了，帮我报修"
-uv run congclaw tui        # 多轮：套餐咨询 → 指代 → 办理确认
+# 2. 起前端（另开终端）
+cd ui && npm install && npm run dev
 
-# 3. 热插拔 Skill（服务不重启）
+# 3. 浏览器演示
+#    主界面 → 账号切换/登录 → 余额查询 → 展开思考过程
+#    → 套餐咨询(RAG) → 故障报修(追问→建单) → 套餐变更(确认→执行)
+#    → Sessions 会话列表 → 管理员 → 数据库管理 → RAG 知识库管理 → 分片预览
+
+# 4.（可选）热插拔 Skill（服务不重启）
 curl -X POST http://127.0.0.1:8000/api/v1/skills -H "Content-Type: application/json" -d @demo_skill.json
 
-# 4. 跑评测出报告
+# 5.（可选）跑评测出报告
 curl -X POST http://127.0.0.1:8000/api/v1/eval/run
 ```
