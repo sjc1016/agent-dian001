@@ -2,7 +2,7 @@
   <img src="./logo.png" alt="CongClaw Logo" width="460" />
 </p>
 
-<h1 align="center">电信客服智能体（基于 CongClaw 改造）</h1>
+<h1 align="center">智服·电信智能客服Agent系统 </h1>
 
 <p align="center">
   FastAPI + LangGraph 双引擎客服 Agent：RAG 快速检索保响应速度，Agent 深度推理保复杂业务处理能力。<br/>
@@ -11,7 +11,7 @@
 
 ## 项目简介
 
-本项目在教学向 Mini CodeAgent **CongClaw** 的骨架上（LangGraph 编排、意图路由、分层记忆、工具注册、反思校验、链路观测），按"保留骨架、替换血肉"的思路改造为**电信客服业务智能体**，面向四类高频场景的多轮对话：
+本项目**电信客服业务智能体**，面向四类高频场景的多轮对话：
 
 | 业务场景 | 示例 | 承接引擎 |
 | --- | --- | --- |
