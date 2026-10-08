@@ -98,6 +98,10 @@ class CongGraphState(TypedDict, total=False):
     pending_approval: dict[str, Any] | None
     approval_resolution: str  # confirmed / cancelled / unknown
     tool_traces: list[dict[str, Any]]  # Skill 调用轨迹（P6 评测消费）
+    # 阶段 7：常见问答沉淀（回合结束后的知识沉淀结果）
+    faq_sediment_action: str  # create / merge / skip / not_eligible
+    faq_entry_id: str  # 落库后的 FAQ 编号（未落库为空）
+    faq_sediment_reason: str  # 未沉淀原因或合并依据（写 trace，便于评测断言）
     last_actor_summary: str
     research_notes: str
     sources: list[SourceItem]

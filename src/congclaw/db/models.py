@@ -150,3 +150,34 @@ class UserProfileModel(Base):
     last_session_workspace: Mapped[str] = mapped_column(nullable=False, default="")
     created_at: Mapped[str] = mapped_column(nullable=False)
     updated_at: Mapped[str] = mapped_column(nullable=False)
+
+
+class FaqEntryModel(Base):
+    """阶段 7：常见问答解决方案沉淀库（跨会话、跨用户的全局知识沉淀）。
+
+    与 ``user_profile``（按号码的个人记忆）对称：本表沉淀的是「任何用户都可能
+    遇到的常见问答解决方案」。``question_variants`` / ``preconditions`` /
+    ``related_skills`` / ``sources_json`` 以 JSON 文本存储；``status`` 决定条目
+    是否可被复用（draft 须人工审核后转 approved / published）。
+    """
+
+    __tablename__ = "faq_entry"
+
+    faq_id: Mapped[str] = mapped_column(primary_key=True)
+    canonical_question: Mapped[str] = mapped_column(nullable=False)
+    question_variants: Mapped[str] = mapped_column(nullable=False, default="[]")
+    category: Mapped[str] = mapped_column(nullable=False, default="")
+    solution: Mapped[str] = mapped_column(nullable=False, default="")
+    preconditions: Mapped[str] = mapped_column(nullable=False, default="[]")
+    related_skills: Mapped[str] = mapped_column(nullable=False, default="[]")
+    keywords: Mapped[str] = mapped_column(nullable=False, default="")
+    status: Mapped[str] = mapped_column(nullable=False, default="draft")
+    confidence: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    source_route: Mapped[str] = mapped_column(nullable=False, default="")
+    source_session_id: Mapped[str] = mapped_column(nullable=False, default="")
+    source_turn_index: Mapped[int] = mapped_column(nullable=False, default=0)
+    sources_json: Mapped[str] = mapped_column(nullable=False, default="[]")
+    merge_count: Mapped[int] = mapped_column(nullable=False, default=1)
+    hit_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_at: Mapped[str] = mapped_column(nullable=False)
+    updated_at: Mapped[str] = mapped_column(nullable=False)

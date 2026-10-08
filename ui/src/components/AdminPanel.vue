@@ -13,6 +13,11 @@ import {
   ingestRag,
   uploadRag,
   deleteRagSource,
+  getFaqStats,
+  listFaq,
+  getFaqEntry,
+  updateFaqStatus,
+  reflowFaq,
 } from '../api/admin.js'
 
 const emit = defineEmits(['close'])
@@ -327,8 +332,129 @@ async function removeSource(source) {
   }
 }
 
+/* ---------------- FAQ 沉淀库管理 ---------------- */
+const FAQ_STATUS_LABELS = {
+  draft: '待审核',
+  approved: '已通过',
+  published: '已发布',
+  archived: '已归档',
+}
+
+const faqStats = reactive({ total: 0, pending_review: 0, published: 0, by_category: {} })
+const faqRows = ref([])
+const faqTotal = ref(0)
+const faqFilters = reactive({ status: '', category: '', q: '' })
+const faqLoading = ref(false)
+const faqReflowing = ref(false)
+const faqError = ref('')
+const faqNotice = ref('')
+const faqPageSize = 20
+
+// 条目详情弹窗（预览解决方案全文与来源）
+const faqDetailVisible = ref(false)
+const faqDetailLoading = ref(false)
+const faqDetailError = ref('')
+const faqDetail = ref(null)
+
+function faqFlash(message, isError = false) {
+  if (isError) {
+    faqError.value = message
+    faqNotice.value = ''
+  } else {
+    faqNotice.value = message
+    faqError.value = ''
+  }
+  setTimeout(() => {
+    if (faqError.value === message) faqError.value = ''
+    if (faqNotice.value === message) faqNotice.value = ''
+  }, 4200)
+}
+
+function statusLabel(status) {
+  return FAQ_STATUS_LABELS[status] || status
+}
+
+async function loadFaq() {
+  faqLoading.value = true
+  try {
+    const [stats, listing] = await Promise.all([
+      getFaqStats(),
+      listFaq({
+        status: faqFilters.status,
+        category: faqFilters.category,
+        q: faqFilters.q.trim(),
+        limit: faqPageSize,
+      }),
+    ])
+    faqStats.total = stats.total || 0
+    faqStats.pending_review = stats.pending_review || 0
+    faqStats.published = stats.published || 0
+    faqStats.by_category = stats.by_category || {}
+    faqRows.value = listing.rows || []
+    faqTotal.value = listing.total || 0
+  } catch (err) {
+    faqFlash(err.message, true)
+  } finally {
+    faqLoading.value = false
+  }
+}
+
+async function changeFaqStatus(row, status) {
+  const label = statusLabel(status)
+  if (!window.confirm(`确认将「${row.canonical_question}」标记为${label}？`)) return
+  try {
+    const result = await updateFaqStatus(row.faq_id, status)
+    const reflow = result?.reflow
+    if (reflow && reflow.status === 'error') {
+      faqFlash(`已标记为${label}，但知识库回流失败：${reflow.error}`, true)
+    } else if (reflow) {
+      faqFlash(
+        reflow.cleared
+          ? `已标记为${label}，回流文档已清空（当前离线无已发布条目）`
+          : `已标记为${label}，${reflow.entries} 条已回流知识库（${reflow.children} 个分片）`
+      )
+    } else {
+      faqFlash(`已标记为${label}`)
+    }
+    await loadFaq()
+  } catch (err) {
+    faqFlash(err.message, true)
+  }
+}
+
+async function reflowFaqNow() {
+  if (!window.confirm('把全部已发布条目重新回流到知识库？')) return
+  faqReflowing.value = true
+  try {
+    const result = await reflowFaq()
+    faqFlash(
+      result.cleared
+        ? '回流完成：当前没有已发布条目，回流文档已清空'
+        : `回流完成：${result.entries} 条已回流知识库（${result.children} 个分片）`
+    )
+  } catch (err) {
+    faqFlash(err.message, true)
+  } finally {
+    faqReflowing.value = false
+  }
+}
+
+async function openFaqDetail(row) {
+  faqDetailVisible.value = true
+  faqDetailLoading.value = true
+  faqDetailError.value = ''
+  faqDetail.value = null
+  try {
+    faqDetail.value = await getFaqEntry(row.faq_id)
+  } catch (err) {
+    faqDetailError.value = err.message
+  } finally {
+    faqDetailLoading.value = false
+  }
+}
+
 onMounted(async () => {
-  await Promise.all([loadTables(), loadRag()])
+  await Promise.all([loadTables(), loadRag(), loadFaq()])
 })
 </script>
 
@@ -338,7 +464,7 @@ onMounted(async () => {
       <header class="admin-header">
         <div class="header-text">
           <h2>后台管理</h2>
-          <span class="header-sub">数据库管理 · RAG 知识库管理</span>
+          <span class="header-sub">数据库管理 · RAG 知识库管理 · FAQ 沉淀库</span>
         </div>
         <button class="close-btn" @click="emit('close')">返回对话</button>
       </header>
@@ -349,6 +475,9 @@ onMounted(async () => {
         </button>
         <button class="tab" :class="{ active: tab === 'rag' }" @click="tab = 'rag'">
           RAG 知识库管理
+        </button>
+        <button class="tab" :class="{ active: tab === 'faq' }" @click="tab = 'faq'">
+          FAQ 沉淀库
         </button>
       </nav>
 
@@ -427,7 +556,7 @@ onMounted(async () => {
       </div>
 
       <!-- RAG 知识库管理 -->
-      <div v-else class="admin-body rag-body">
+      <div v-else-if="tab === 'rag'" class="admin-body rag-body">
         <div v-if="ragError" class="alert error">{{ ragError }}</div>
         <div v-else-if="ragNotice" class="alert success">{{ ragNotice }}</div>
 
@@ -507,6 +636,124 @@ onMounted(async () => {
                   <td class="op-col">
                     <button class="link-btn" @click.stop="openPreview(item.doc_source)">查看分片</button>
                     <button class="link-btn danger" @click.stop="removeSource(item.doc_source)">删除</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- FAQ 沉淀库 -->
+      <div v-else class="admin-body faq-body">
+        <div v-if="faqError" class="alert error">{{ faqError }}</div>
+        <div v-else-if="faqNotice" class="alert success">{{ faqNotice }}</div>
+
+        <div class="stat-cards">
+          <div class="stat-card">
+            <span class="stat-label">沉淀条目</span>
+            <span class="stat-value">{{ faqStats.total }}</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">待审核（草稿）</span>
+            <span class="stat-value warn">{{ faqStats.pending_review }}</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">已通过 / 已发布</span>
+            <span class="stat-value">{{ faqStats.published }}</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">覆盖分类</span>
+            <span class="stat-value">{{ Object.keys(faqStats.by_category).length }}</span>
+          </div>
+        </div>
+
+        <div class="faq-panel">
+          <div class="pane-title">
+            条目审核 ({{ faqTotal }})
+            <button class="btn small" :disabled="faqLoading" @click="loadFaq">刷新</button>
+          </div>
+          <div class="action-row">
+            <select v-model="faqFilters.status" class="input">
+              <option value="">全部状态</option>
+              <option value="draft">待审核</option>
+              <option value="approved">已通过</option>
+              <option value="published">已发布</option>
+              <option value="archived">已归档</option>
+            </select>
+            <input
+              v-model="faqFilters.category"
+              class="input"
+              type="text"
+              placeholder="分类（咨询 / 办理 / 故障 / 规则）"
+            />
+            <input
+              v-model="faqFilters.q"
+              class="input search"
+              type="text"
+              placeholder="搜索标准问句 / 解决方案 / 关键词"
+              @keyup.enter="loadFaq"
+            />
+            <button class="btn primary" :disabled="faqLoading" @click="loadFaq">查询</button>
+            <button
+              class="btn"
+              @click="faqFilters.status = ''; faqFilters.category = ''; faqFilters.q = ''; loadFaq()"
+            >重置</button>
+            <button class="btn" :disabled="faqReflowing" @click="reflowFaqNow">
+              {{ faqReflowing ? '回流中…' : '重跑回流' }}
+            </button>
+          </div>
+          <p class="hint">
+            条目由对话回合自动沉淀，默认「待审核」；点击「发布」会把全部已发布条目回流到知识库，
+            之后客服提问即可通过 RAG 检索到（归档下架后自动从知识库移除）。
+            「重跑回流」用于失败重试：已发布条目被后续回合补充内容时状态不变、不会自动回流，
+            副本会滞后到下次改状态，也可点这里手动同步。
+          </p>
+
+          <div class="grid-wrap">
+            <div v-if="faqLoading" class="placeholder">加载中...</div>
+            <div v-else-if="!faqRows.length" class="placeholder">暂无沉淀条目</div>
+            <table v-else class="grid">
+              <thead>
+                <tr>
+                  <th class="num-col">编号</th>
+                  <th>标准问句</th>
+                  <th class="num-col">分类</th>
+                  <th class="num-col">合并</th>
+                  <th class="num-col">置信度</th>
+                  <th class="num-col">状态</th>
+                  <th class="op-col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in faqRows" :key="row.faq_id">
+                  <td class="num-col">{{ row.faq_id }}</td>
+                  <td :title="row.canonical_question" class="question-cell">
+                    {{ row.canonical_question }}
+                  </td>
+                  <td class="num-col">{{ row.category || '-' }}</td>
+                  <td class="num-col">{{ row.merge_count }}</td>
+                  <td class="num-col">{{ row.confidence.toFixed(2) }}</td>
+                  <td class="num-col">
+                    <span class="status-tag" :class="row.status">{{ statusLabel(row.status) }}</span>
+                  </td>
+                  <td class="op-col">
+                    <button class="link-btn" @click="openFaqDetail(row)">详情</button>
+                    <button
+                      v-if="row.status !== 'published'"
+                      class="link-btn"
+                      @click="changeFaqStatus(row, 'published')"
+                    >发布</button>
+                    <button
+                      v-if="row.status === 'draft'"
+                      class="link-btn"
+                      @click="changeFaqStatus(row, 'approved')"
+                    >通过</button>
+                    <button
+                      v-if="row.status !== 'archived'"
+                      class="link-btn danger"
+                      @click="changeFaqStatus(row, 'archived')"
+                    >归档</button>
                   </td>
                 </tr>
               </tbody>
@@ -627,6 +874,75 @@ onMounted(async () => {
           </span>
           <div class="footer-actions">
             <button class="btn" @click="previewVisible = false">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FAQ 条目详情弹窗 -->
+    <div v-if="faqDetailVisible" class="modal-overlay" @click.self="faqDetailVisible = false">
+      <div class="preview-modal">
+        <div class="modal-header">
+          <div class="preview-title">
+            <h3>FAQ 条目详情</h3>
+            <span class="preview-source">
+              {{ faqDetail ? `${faqDetail.faq_id} · ${statusLabel(faqDetail.status)}` : '加载中' }}
+            </span>
+          </div>
+          <button class="close-btn" @click="faqDetailVisible = false">×</button>
+        </div>
+
+        <div class="preview-body">
+          <div v-if="faqDetailLoading" class="placeholder">加载中...</div>
+          <div v-else-if="faqDetailError" class="alert error">{{ faqDetailError }}</div>
+
+          <template v-else-if="faqDetail">
+            <div class="chunk-card">
+              <div class="chunk-head">
+                <span class="chunk-index">标准问句</span>
+                <span class="chunk-meta">分类 {{ faqDetail.category || '-' }}</span>
+                <span class="chunk-meta">置信度 {{ faqDetail.confidence.toFixed(2) }}</span>
+                <span class="chunk-meta">合并 {{ faqDetail.merge_count }} 次</span>
+              </div>
+              <pre class="chunk-text">{{ faqDetail.canonical_question }}</pre>
+            </div>
+
+            <div class="chunk-card" v-if="faqDetail.question_variants.length">
+              <div class="chunk-head"><span class="chunk-index">同义问法</span></div>
+              <pre class="chunk-text">{{ faqDetail.question_variants.join('\n') }}</pre>
+            </div>
+
+            <div class="chunk-card">
+              <div class="chunk-head"><span class="chunk-index">解决方案</span></div>
+              <pre class="chunk-text">{{ faqDetail.solution || '(空)' }}</pre>
+            </div>
+
+            <div class="chunk-card" v-if="faqDetail.preconditions.length">
+              <div class="chunk-head"><span class="chunk-index">前置条件</span></div>
+              <pre class="chunk-text">{{ faqDetail.preconditions.join('\n') }}</pre>
+            </div>
+
+            <div class="chunk-card" v-if="faqDetail.related_skills.length">
+              <div class="chunk-head"><span class="chunk-index">关联技能</span></div>
+              <pre class="chunk-text">{{ faqDetail.related_skills.join('、') }}</pre>
+            </div>
+
+            <div class="chunk-card">
+              <div class="chunk-head">
+                <span class="chunk-index">溯源</span>
+                <span class="chunk-meta">来源链路 {{ faqDetail.source_route || '-' }}</span>
+              </div>
+              <pre class="chunk-text">会话 {{ faqDetail.source_session_id || '-' }} · 第 {{ faqDetail.source_turn_index }} 轮
+关键词 {{ faqDetail.keywords || '-' }}
+来源 {{ faqDetail.sources.length }} 条 · 创建 {{ faqDetail.created_at }} · 更新 {{ faqDetail.updated_at }}</pre>
+            </div>
+          </template>
+        </div>
+
+        <div class="modal-footer">
+          <span class="footer-hint">{{ faqDetail ? faqDetail.faq_id : '' }}</span>
+          <div class="footer-actions">
+            <button class="btn" @click="faqDetailVisible = false">关闭</button>
           </div>
         </div>
       </div>
@@ -1047,6 +1363,75 @@ onMounted(async () => {
 
 .source-panel .grid-wrap {
   max-height: 340px;
+}
+
+/* FAQ 沉淀库 */
+.faq-body {
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.faq-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.faq-panel .action-row {
+  flex-wrap: wrap;
+}
+
+.faq-panel .action-row .input {
+  flex: 1;
+  min-width: 140px;
+}
+
+.faq-panel .grid-wrap {
+  margin-top: 8px;
+  max-height: 460px;
+}
+
+.question-cell {
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.stat-value.warn {
+  color: var(--warning);
+}
+
+.status-tag {
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.status-tag.draft {
+  background: rgba(240, 196, 105, 0.16);
+  color: var(--warning);
+}
+
+.status-tag.approved {
+  background: rgba(127, 214, 138, 0.14);
+  color: var(--success);
+}
+
+.status-tag.published {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+.status-tag.archived {
+  background: var(--bg-tertiary);
+  color: var(--text-subtle);
 }
 
 /* 来源行可点击预览分片 */

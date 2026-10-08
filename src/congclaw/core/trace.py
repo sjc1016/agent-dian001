@@ -48,6 +48,8 @@ EVAL_KEY_EVENT_TYPES = frozenset(
         "agent_fallback",
         "agent_confirm_required",
         "session_turn_saved",
+        # 阶段 7：沉淀落库（仅记最终结果，门控/召回等中间事件留在 events.jsonl）
+        "faq_sediment_saved",
     }
 )
 

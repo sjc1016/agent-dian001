@@ -24,6 +24,8 @@ from congclaw.graph.memory import (
 from congclaw.graph.state import CongGraphState, TodoItem, VerificationCheck
 from congclaw.agent.nodes import detect_approval_resolution
 from congclaw.agent.workflow import build_agent_subgraph
+from congclaw.faq.gate import evaluate_sediment_gate
+from congclaw.faq.workflow import build_faq_sediment_subgraph
 from congclaw.prompts.agent import AGENT_FALLBACK_REPLY
 from congclaw.prompts.intent import (
     CLARIFY_MAX_ROUNDS,
@@ -501,6 +503,77 @@ async def agent_loop_node(state: CongGraphState) -> dict[str, Any]:
         "fallback_reason": str(result.get("fallback_reason") or state.get("fallback_reason") or ""),
         "metadata": metadata,
         "tool_traces": tool_traces,
+    }
+
+
+def sediment_route(state: CongGraphState) -> str:
+    """阶段 7：四类业务分支之后的条件边——本轮是否值得沉淀。
+
+    规则门控不通过的回合直接到 END，既不进入 faq_sediment 节点、也不产生
+    任何 LLM 调用，因此绝大多数对话不会因沉淀能力而附加延迟。
+    """
+    passed, _ = evaluate_sediment_gate(state)
+    return "faq_sediment" if passed else "end"
+
+
+async def faq_sediment_node(state: CongGraphState) -> dict[str, Any]:
+    """阶段 7：常见问答沉淀子图挂载点。
+
+    把「用户问题 → 解决方案」沉淀为可复用的 FAQ 条目（默认 draft 待人工审核）。
+    这是答复完成后的旁路副作用节点：子图整体异常只写 trace 与状态，绝不打断
+    已完成的客服回合；与 ``rag_answer_node`` / ``agent_loop_node`` 一样，
+    通过 ``astream`` 驱动子图并把 custom 事件实时转发进 trace。
+    """
+    writer = _get_writer()
+    sub_input: dict[str, Any] = {
+        "task": str(state.get("task") or ""),
+        "rewritten_task": str(state.get("rewritten_task") or ""),
+        "route": str(state.get("intent_route") or ""),
+        "category": str(state.get("intent_category") or ""),
+        "confidence": float(state.get("intent_confidence", 0.0) or 0.0),
+        "final_answer": str(state.get("final_answer") or state.get("chat_response") or ""),
+        "sources": list(state.get("sources") or []),
+        "tool_traces": list(state.get("tool_traces") or []),
+        "recent_turns": list(state.get("recent_turns") or []),
+        "session_id": str(state.get("session_id") or ""),
+        "session_turn": int(state.get("session_turn", 0) or 0),
+        "candidates": [],
+    }
+    writer({"type": "faq_sediment_start", "route": sub_input["route"]})
+
+    try:
+        result: dict[str, Any] = {}
+        node_sequence: list[str] = []
+        async for mode, chunk in build_faq_sediment_subgraph().astream(
+            sub_input, stream_mode=["updates", "custom"]
+        ):
+            if mode == "custom":
+                writer(chunk)
+            elif isinstance(chunk, dict):
+                for node_name, update in chunk.items():
+                    node_sequence.append(str(node_name))
+                    if isinstance(update, dict):
+                        result.update(update)
+        writer({"type": "faq_sediment_trace", "node_sequence": node_sequence})
+    except Exception as exc:  # noqa: BLE001 —— 沉淀失败不影响本轮会话
+        error = f"{type(exc).__name__}: {exc}"
+        writer({"type": "faq_sediment_error", "stage": "subgraph", "error": error})
+        return {"faq_sediment_action": "error", "faq_entry_id": "", "faq_sediment_reason": error}
+
+    action = str(result.get("action") or "skip")
+    reason = str(result.get("reason") or result.get("gate_reason") or "")
+    writer(
+        {
+            "type": "faq_sediment_finished",
+            "action": action,
+            "faq_id": str(result.get("faq_id") or ""),
+            "persisted": bool(result.get("persisted")),
+        }
+    )
+    return {
+        "faq_sediment_action": action,
+        "faq_entry_id": str(result.get("faq_id") or ""),
+        "faq_sediment_reason": reason,
     }
 
 

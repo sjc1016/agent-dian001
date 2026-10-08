@@ -129,6 +129,35 @@ CREATE TABLE IF NOT EXISTS user_profile (
     updated_at          TEXT NOT NULL
 );
 
+-- 阶段 7：常见问答解决方案沉淀库（FAQ Sediment）
+-- 每轮对话结束后由主图 faq_sediment 节点用 LLM 判定并抽取「可复用的常见问答」：
+-- 抽取结果一律以 draft 落库，须人工审核转 approved / published 后才进入复用途径。
+-- merge_count 记录该方案被多少轮对话验证或补充过（常见度信号，用于「高频问题 TOP N」）；
+-- hit_count 为被复用的命中次数（第二期 FAQ 快查层 / 回流 RAG 使用，本期恒为 0）。
+-- question_variants / preconditions / related_skills / sources_json 均为 JSON 文本。
+CREATE TABLE IF NOT EXISTS faq_entry (
+    faq_id              TEXT PRIMARY KEY,
+    canonical_question  TEXT NOT NULL,
+    question_variants   TEXT NOT NULL DEFAULT '[]',    -- 同义问法 JSON 数组
+    category            TEXT NOT NULL DEFAULT '',      -- 咨询 / 办理 / 故障 / 规则
+    solution            TEXT NOT NULL DEFAULT '',      -- 解决方案正文（分点、含关键数值与条件）
+    preconditions       TEXT NOT NULL DEFAULT '[]',    -- 适用前提 JSON 数组
+    related_skills      TEXT NOT NULL DEFAULT '[]',    -- 涉及业务工具名 JSON 数组
+    keywords            TEXT NOT NULL DEFAULT '',      -- 空格分隔检索关键词
+    status              TEXT NOT NULL DEFAULT 'draft', -- draft/approved/published/archived
+    confidence          REAL NOT NULL DEFAULT 0.0,     -- 沉淀置信度 0~1
+    source_route        TEXT NOT NULL DEFAULT '',      -- 来源路由 rag_answer / agent_loop
+    source_session_id   TEXT NOT NULL DEFAULT '',      -- 来源会话（溯源用）
+    source_turn_index   INTEGER NOT NULL DEFAULT 0,    -- 来源轮次（溯源用）
+    sources_json        TEXT NOT NULL DEFAULT '[]',    -- RAG 来源引用 JSON 数组
+    merge_count         INTEGER NOT NULL DEFAULT 1,    -- 被沉淀/合并次数（≥1）
+    hit_count           INTEGER NOT NULL DEFAULT 0,    -- 被复用命中次数
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_faq_entry_status ON faq_entry(status);
+CREATE INDEX IF NOT EXISTS idx_faq_entry_category ON faq_entry(category);
+
 -- 演示种子数据（INSERT OR IGNORE：幂等建库不覆盖用户改动）
 -- username 取机主姓名，便于用「用户名」登录演示；password_hash 由 init_db 统一回填默认口令
 INSERT OR IGNORE INTO account (phone, owner_name, username, balance, real_time_fee, bill_cycle, updated_at)

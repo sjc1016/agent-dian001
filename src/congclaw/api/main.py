@@ -19,6 +19,7 @@ from congclaw.api.routes.admin import router as admin_router
 from congclaw.api.routes.auth import router as auth_router
 from congclaw.api.routes.chat import router as chat_router
 from congclaw.api.routes.eval import router as eval_router
+from congclaw.api.routes.faq import router as faq_router
 from congclaw.api.routes.knowledge import router as knowledge_router
 from congclaw.api.routes.sessions import router as sessions_router
 from congclaw.api.routes.skills import router as skills_router
@@ -70,6 +71,7 @@ app.include_router(admin_router)
 app.include_router(knowledge_router)
 app.include_router(skills_router)
 app.include_router(eval_router)
+app.include_router(faq_router)
 app.include_router(sessions_router)
 app.include_router(users_router)
 

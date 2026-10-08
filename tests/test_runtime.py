@@ -398,7 +398,15 @@ def test_stream_session_events_chat_writes_session_without_harness(monkeypatch, 
     custom_types = [event["event"]["type"] for event in events if event.get("type") == "custom_event"]
     assert "session_started" in custom_types
     assert "session_turn_saved" in custom_types
-    assert not (tmp_path / ".congclaw" / "checkpoints").exists()
+    # 会话路径按「回合」写检查点（回合开始 running + 回合结束 finished），
+    # 而不是为每个图节点都落盘；不走遗留 complex 工作流也不影响这两次落盘
+    checkpoint_events = [
+        event["event"]
+        for event in events
+        if event.get("type") == "custom_event" and event["event"].get("type") == "checkpoint_saved"
+    ]
+    assert [event["status"] for event in checkpoint_events] == ["running", "finished"]
+    assert (tmp_path / ".congclaw" / "checkpoints" / "RECOVERY.md").exists()
     # 阶段 6 起原生 async 路径也写 trace（trace_mode="on"）
     assert (tmp_path / ".congclaw" / "traces").exists()
     # 会话状态已持久化到 SQLite（不再写 session.json）

@@ -1,5 +1,23 @@
 const DETAIL_TEXT_LIMIT = 20000
 
+// 阶段 7「常见问答沉淀」事件的中文标签。
+// 门控原因码与后端 congclaw/faq/gate.py 的返回值一一对应，改动需同步。
+const FAQ_GATE_REASONS = {
+  sediment_disabled: '沉淀能力已关闭',
+  route_not_sedimentable: '该分支无可沉淀结论',
+  empty_answer: '本轮无答复',
+  fallback_turn: '兜底回复回合',
+  pending_confirmation: '等待人工确认',
+  no_evidence: '无检索证据',
+  no_tool_result: '无成功的技能结果',
+  question_too_short: '问句过短',
+  privacy_risk: '含个人隐私信息',
+}
+
+const FAQ_ACTIONS = { create: '新建', merge: '合并', skip: '跳过' }
+
+const FAQ_ENTRY_STATUSES = { draft: '草稿待审', approved: '已通过', published: '已发布', archived: '已归档' }
+
 export function shorten(value, limit = 260) {
   const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
   if (text.length <= limit) return text
@@ -159,6 +177,92 @@ function summarizeCustomEvent(event) {
       body: `trace: ${event.trace_id || ''}\nstatus: ${event.status || ''}\npath: ${event.trace_dir || ''}\nnodes: ${nodeText}\ntools: ${event.tool_calls || 0} total / ${event.failed_tool_calls || 0} failed`,
       category: 'trace',
       style: event.status === 'finished' ? 'green' : 'yellow',
+    }
+  }
+  // ---- 阶段 7：常见问答沉淀 ----
+  // body 首行统一为 `sediment: <token>`，供 eventCategory 判定卡片配色；
+  // 由于折叠态只显示标题，标题必须自带结论，展开后才看明细。
+  if (eventType === 'faq_sediment_start') {
+    return {
+      title: `沉淀判定 · ${event.route || ''}`,
+      body: `sediment: info\nroute: ${event.route || ''}\nstage: 规则门控 → 判重召回 → 抽取 → 落库`,
+      category: 'faq',
+    }
+  }
+  if (eventType === 'faq_gate') {
+    const passed = event.passed === true
+    const reason = FAQ_GATE_REASONS[event.reason] || event.reason || ''
+    return {
+      title: passed ? '沉淀门控 · 通过' : `沉淀门控 · 跳过（${reason}）`,
+      body: `sediment: info\npassed: ${passed}\nreason: ${passed ? '(通过)' : reason}\ncode: ${event.reason || ''}\nquestion: ${event.question || ''}`,
+      category: 'faq',
+    }
+  }
+  if (eventType === 'faq_match') {
+    const count = Number(event.candidate_count || 0)
+    const lines = [
+      'sediment: info',
+      `candidates: ${count}`,
+      `top_similarity: ${event.top_similarity || 0}`,
+    ]
+    if (event.error) lines.push(`error: ${event.error}`)
+    lines.push(`question: ${event.question || ''}`)
+    return {
+      title: count ? `沉淀判重 · ${count} 条相近条目` : '沉淀判重 · 无相近条目',
+      body: lines.join('\n'),
+      category: 'faq',
+    }
+  }
+  if (eventType === 'faq_sediment_decision') {
+    const action = String(event.action || 'skip')
+    const label = FAQ_ACTIONS[action] || action
+    const confidence = event.confidence === null || event.confidence === undefined ? '' : `\nconfidence: ${event.confidence}`
+    return {
+      title: `沉淀决策 · ${label}`,
+      body: `sediment: info\naction: ${label} (${action})\nreason: ${event.reason || ''}${confidence}\ncanonical_question: ${event.canonical_question || ''}\ncategory: ${event.category || ''}`,
+      category: 'faq',
+    }
+  }
+  if (eventType === 'faq_sediment_saved') {
+    const status = FAQ_ENTRY_STATUSES[event.status] || event.status || ''
+    const action = FAQ_ACTIONS[event.action] || event.action || ''
+    return {
+      title: `沉淀入库 · ${event.faq_id || ''}（${status}）`,
+      body: `sediment: saved\nfaq_id: ${event.faq_id || ''}\naction: ${action}\nentry_status: ${status}\ncategory: ${event.category || ''}\nmerge_count: ${event.merge_count || 0}\ncanonical_question: ${event.canonical_question || ''}`,
+      category: 'faq',
+    }
+  }
+  if (eventType === 'faq_sediment_skipped') {
+    return {
+      title: `沉淀跳过 · ${shorten(event.reason || '模型判定无需沉淀', 60)}`,
+      body: `sediment: skipped\nreason: ${event.reason || ''}`,
+      category: 'faq',
+    }
+  }
+  if (eventType === 'faq_sediment_error') {
+    return {
+      title: `沉淀异常 · ${event.stage || 'unknown'} 阶段`,
+      body: `sediment: error\nstage: ${event.stage || ''}\nerror: ${event.error || ''}`,
+      category: 'faq',
+    }
+  }
+  if (eventType === 'faq_sediment_trace') {
+    const nodes = Array.isArray(event.node_sequence) ? event.node_sequence : []
+    return {
+      title: `沉淀链路 · ${nodes.join(' → ') || '(空)'}`,
+      body: `sediment: info\nnode_sequence: ${nodes.join(' → ') || '(空)'}`,
+      category: 'faq',
+    }
+  }
+  if (eventType === 'faq_sediment_finished') {
+    const action = String(event.action || 'skip')
+    const persisted = event.persisted === true
+    const token = action === 'error' ? 'error' : (persisted ? 'saved' : 'skipped')
+    const suffix = persisted ? `入库 ${event.faq_id || ''}` : FAQ_ACTIONS[action] || action
+    return {
+      title: `沉淀完成 · ${suffix}`,
+      body: `sediment: ${token}\naction: ${FAQ_ACTIONS[action] || action} (${action})\npersisted: ${persisted}\nfaq_id: ${event.faq_id || ''}`,
+      category: 'faq',
     }
   }
   return { title: String(eventType), body: shorten(event, DETAIL_TEXT_LIMIT), category: 'event', style: 'white' }
@@ -322,6 +426,13 @@ export function eventCategory(summary) {
   if (summary.category === 'verifier' || summary.category === 'tool_result') {
     // formatToolResult / formatSkillResult 均以「ok: false」标记调用失败
     if (summary.body && (summary.body.includes('FAIL') || summary.body.includes('ok: false'))) return 'error'
+  }
+  if (summary.category === 'faq') {
+    // 沉淀事件首行 `sediment: <token>` 由 summarizeCustomEvent 统一写入
+    const token = lineValue(summary.body || '', 'sediment')
+    if (token === 'error') return 'error'
+    if (token === 'saved') return 'success'
+    return 'info'
   }
   if (['plan', 'tool_call', 'handoff', 'context', 'checkpoint'].includes(summary.category)) return 'running'
   return 'info'

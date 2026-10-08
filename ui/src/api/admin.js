@@ -88,3 +88,32 @@ export function deleteRagSource(source) {
     method: 'DELETE',
   })
 }
+
+/* ---------------- FAQ 沉淀库 ---------------- */
+
+export function getFaqStats() {
+  return request('/api/v1/faq/stats')
+}
+
+export function listFaq({ status = '', category = '', q = '', limit = 50, offset = 0 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (status) params.set('status', status)
+  if (category) params.set('category', category)
+  if (q) params.set('q', q)
+  return request(`/api/v1/faq?${params}`)
+}
+
+export function getFaqEntry(faqId) {
+  return request(`/api/v1/faq/${encodeURIComponent(faqId)}`)
+}
+
+export function updateFaqStatus(faqId, status) {
+  return request(`/api/v1/faq/${encodeURIComponent(faqId)}/status`, {
+    method: 'PUT',
+    body: JSON.stringify({ status }),
+  })
+}
+
+export function reflowFaq() {
+  return request('/api/v1/faq/reflow', { method: 'POST' })
+}
