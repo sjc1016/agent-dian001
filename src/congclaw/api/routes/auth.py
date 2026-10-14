@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from congclaw.skills.auth_store import (
+from congclaw.domain.auth_store import (
     AuthError,
     get_public_user,
     login as login_account,

@@ -22,6 +22,7 @@ import {
 import { streamChat } from './api/chat.js'
 import { getSession } from './api/sessions.js'
 import { listSkills } from './api/skills.js'
+import { listTools } from './api/tools.js'
 import {
   summarizeEvent,
   shouldHideEvent,
@@ -381,20 +382,26 @@ function handleKeydown(e) {
   }
 }
 
-/** 拉取注册中心的 Skill 总数，供右侧面板「已注册技能」展示；失败静默降级为 0。 */
-async function loadSkillCount() {
+/** 拉取注册中心的能力清单总数（技能/工具分列），供右侧面板展示；失败静默降级为 0。 */
+async function loadCapabilityCounts() {
   try {
     const data = await listSkills()
     sessionStore.skillCount = Number(data.total) || 0
   } catch {
     sessionStore.skillCount = 0
   }
+  try {
+    const data = await listTools()
+    sessionStore.toolRegistryCount = Number(data.total) || 0
+  } catch {
+    sessionStore.toolRegistryCount = 0
+  }
 }
 
 onMounted(async () => {
   window.addEventListener('keydown', handleKeydown)
-  // 技能清单与当前用户并行拉取（技能数是全局信息，不随用户切换变化）
-  const [user] = await Promise.all([loadAndResolveUser(), loadSkillCount()])
+  // 能力清单与当前用户并行拉取（能力数是全局信息，不随用户切换变化）
+  const [user] = await Promise.all([loadAndResolveUser(), loadCapabilityCounts()])
   applyUser(user, { clearConversation: false })
   pushWelcome()
 })

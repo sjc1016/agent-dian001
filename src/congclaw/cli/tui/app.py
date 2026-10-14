@@ -497,11 +497,13 @@ class CongClawTuiApp(App[None]):
             self.tool_count += 1
         if payload.get("type") == "tool_result":
             result = payload.get("result")
-            if isinstance(result, dict):
-                if result.get("ok") is False:
-                    self.failed_tool_count += 1
-                if result.get("requires_approval"):
-                    self.approval_count += 1
+            if not isinstance(result, dict):
+                # Agent 子图原子工具事件：结果字段在顶层
+                result = payload
+            if result.get("ok") is False:
+                self.failed_tool_count += 1
+            if result.get("requires_approval"):
+                self.approval_count += 1
         if payload.get("type") == "checkpoint_saved":
             self.latest_checkpoint = str(payload.get("path", ""))
         if payload.get("type") == "trace_summary":

@@ -1,14 +1,14 @@
-"""P4-7：套餐变更办理（写操作，必须人工确认后才执行，P4-16）。"""
+"""P4-7：套餐变更办理（写原子工具，必须人工确认后才执行，P4-16）。"""
 
 from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from congclaw.skills.base import Skill, SkillContext, SkillParameter
-from congclaw.skills.business_store import change_package
+from congclaw.domain.business_store import change_package
+from congclaw.tools.base import Tool, ToolContext, ToolParameter
 
 
-class ChangePackageSkill(Skill):
+class ChangePackageTool(Tool):
     name: ClassVar[str] = "change_package"
     description: ClassVar[str] = (
         "为用户办理套餐变更（升级或降级套餐档位）。"
@@ -19,23 +19,23 @@ class ChangePackageSkill(Skill):
     )
     access: ClassVar[str] = "write"
     requires_confirmation: ClassVar[bool] = True
-    parameters: ClassVar[list[SkillParameter]] = [
-        SkillParameter(
+    parameters: ClassVar[list[ToolParameter]] = [
+        ToolParameter(
             name="target_package",
             description="目标套餐名称、档位关键字或套餐编号（如 199 元档 / 5G畅享199元档 / P199）",
             type="string",
             required=True,
         ),
-        SkillParameter(name="phone", description="要办理变更的手机号码", type="string", required=False),
+        ToolParameter(name="phone", description="要办理变更的手机号码", type="string", required=False),
     ]
 
-    async def run(self, context: SkillContext, **kwargs: Any) -> dict[str, Any]:
+    async def run(self, context: ToolContext, **kwargs: Any) -> dict[str, Any]:
         args = self.validate_arguments(kwargs, context)
         phone = str(args.get("phone") or context.phone)
         result = await change_package(phone, str(args["target_package"]))
         return {"action": "change_package", **result}
 
-    def confirmation_summary(self, context: SkillContext, args: dict[str, Any]) -> str:
+    def confirmation_summary(self, context: ToolContext, args: dict[str, Any]) -> str:
         """人工确认卡片文案（act 节点落 pending approval 时使用）。"""
         phone = str(args.get("phone") or context.phone)
         target = str(args.get("target_package") or "").strip()
@@ -46,4 +46,4 @@ class ChangePackageSkill(Skill):
         )
 
 
-SKILL = ChangePackageSkill()
+TOOL = ChangePackageTool()

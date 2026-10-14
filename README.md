@@ -49,7 +49,7 @@
 │       ↓ 落库 draft 待审 → 人工审核发布 → reflow 回流知识库     │
 ├────────────────────────────────────────────────────────────────┤
 │ 能力层                                                         │
-│  RAG 检索子图                     │ Skill 工具集（热插拔）     │
+│  RAG 检索子图                     │ 原子工具集（热插拔）       │
 │   START ─┬─ retrieve_bm25 ─┐      │ query_balance    余额查询  │
 │        └─ retrieve_dense ┘并行    │ query_package    套餐余量  │
 │        ↓ rrf_fusion（RRF 融合）   │ list_packages    套餐列表  │
@@ -58,8 +58,8 @@
 │        ├ 命中 → parent_lookup     │ change_package   套餐变更  │
 │        │ （父分片回溯+邻域扩展）  │  （写操作，需人工确认）    │
 │        │   → generate（附来源）   │ 目录监听热加载，增删即生效 │
-│        ├ 空/低置信 → rewrite_once │                            │
-│        └ 仍无 → rag_fallback      │                            │
+│        ├ 空/低置信 → rewrite_once │ 编排技能：多工具确定性编排 │
+│        └ 仍无 → rag_fallback      │ balance_query/fault_repair │
 ├────────────────────────────────────────────────────────────────┤
 │ 记忆层                                                         │
 │   短期：会话窗口 + 当前意图 + 待确认槽位（SQLite session 表）  │
@@ -105,7 +105,7 @@ MODEL=...
 BASE_URL=...
 
 DB_PATH=data/telecom_cs.db
-MILVUS_DB_PATH=data/milvus_lite.db      # 中文路径下 faiss 索引异常时指向纯英文路径
+MILVUS_DB_PATH=Z:\milvus_lite.db        # 必须纯英文路径，faiss 在 Windows 上读不了非 ASCII 路径
 EMBED_MODEL_PATH=models/bge-m3
 RERANK_MODEL_PATH=models/bge-reranker
 KNOWLEDGE_DIR=knowledge
@@ -118,10 +118,11 @@ RAG_RERANK_GATE_PROB=0.53               # 证据门阈值（按实测分布校�
 RAG_RERANK_GATE_RAW=0.15
 RAG_PREWARM=1                           # 服务启动后台预热模型，消除首请求冷启动
 
-# Skill 热插拔
-SKILLS_EXTRA_DIR=data/skills            # 外部 Skill 目录
-SKILL_WATCH=1                           # 目录监听开关
-SKILL_WATCH_INTERVAL=2
+# 能力热插拔（原子工具 / 编排技能各自独立的外置目录，共用目录监听开关）
+TOOLS_EXTRA_DIR=data/tools              # 外部原子工具目录
+SKILLS_EXTRA_DIR=data/skills            # 外部编排技能目录
+HOTLOAD_WATCH=1                         # 目录监听开关
+HOTLOAD_WATCH_INTERVAL=2
 
 # 常见问答沉淀（可选，默认开启）
 CONG_FAQ_SEDIMENT=1                     # 置 0 则回合结束不做任何沉淀判定与调用
@@ -133,11 +134,11 @@ CONG_FAQ_SEDIMENT=1                     # 置 0 则回合结束不做任何沉�
 
 ```bash
 uv run python -m congclaw.db           # 幂等建库 data/telecom_cs.db
-uv run python -m congclaw.rag          # 入库 knowledge/ 全部文档（32 份，426 child 分片）
+uv run python -m congclaw.rag          # 入库 knowledge/ 全部文档（32 个来源，427 child / 275 parent 分片）
 uv run python -m congclaw.rag --stats  # 查看知识库规模
 ```
 
-> 建库脚本一次性写入演示业务数据（张伟 13800138000 / 余额 86.50 / 当前套餐 5G畅享129元档 等）。
+> 建库脚本一次性写入演示业务数据（3 个种子客户：张伟 13800138000 / 李娜 13900139000 / 王强 13700137000，含余额、当前套餐与一条历史工单）。
 
 知识库支持**增量同步**，只处理真正变化的文档（sha256 指纹清单落在 `data/knowledge_manifest.json`）：
 
@@ -153,7 +154,7 @@ uv run python scripts/watch_knowledge.py --watch     # 常驻监听，按间隔�
 uv run uvicorn congclaw.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-启动时自动：建库（幂等）→ Skill 注册中心扫描 + 目录监听 → 后台预热 BGE 模型。健康检查：
+启动时自动：建库（幂等）→ 工具/技能注册中心扫描 + 目录监听 → 后台预热 BGE 模型。健康检查：
 
 ```bash
 curl http://127.0.0.1:8000/health
@@ -174,12 +175,12 @@ npm run dev
 ### 6. 运行测试
 
 ```bash
-uv run pytest -q        # 335 条全绿
+uv run pytest -q        # 375 条全绿
 ```
 
 ## 界面一览
 
-打开 `http://localhost:5173/` 即可看到主界面：顶部是品牌区与账号/会话/清空操作，中间是对话区（用户提问 + 思考过程折叠卡 + Agent 回复气泡），右侧是实时 Session 面板（用户、状态、轮次、会话 ID、路由、工作区、已注册技能、技能调用次数、待确认、待办）。
+打开 `http://localhost:5173/` 即可看到主界面：顶部是品牌区与账号/会话/清空操作，中间是对话区（用户提问 + 思考过程折叠卡 + Agent 回复气泡），右侧是实时 Session 面板（用户、状态、轮次、会话 ID、路由、工作区、已注册技能、已注册工具、工具调用次数、待确认、待办）。其中「已注册技能 / 已注册工具」由前端直接向 `/api/v1/skills`、`/api/v1/tools` 拉取能力总数，热插拔增删后即刻反映。
 
 <img src="docs/images/ui/01-home.png" alt="Web UI 主界面" width="900" />
 
@@ -189,17 +190,17 @@ uv run pytest -q        # 335 条全绿
 
 ### 1. 账号体系：切换用户 / 登录 / 注册
 
-系统内置 8 个演示账号，每个账号拥有**独立的工作区、会话与长期记忆**，互不串号。
+建库时写入 3 个种子演示账号（张伟 / 李娜 / 王强），也可在界面「注册新账号」即时开户——注册会在同一事务内补齐该号码的开户基线（当前套餐 + 用户档案），新账号立即可用全部业务功能。无论种子账号还是新注册账号，每个账号都拥有**独立的工作区、会话与长期记忆**，互不串号。
 
-**① 展开账号下拉**：点击右上角用户区，可见全部已注册账号，"张伟"当前身份带 `✓ 当前` 标记。
+**① 展开账号下拉**：点击右上角用户区，可见全部已注册账号，当前身份带 `✓ 当前` 标记；下拉底部另有「登录其他账号」「注册新账号」两个入口，并提示「切换账号需校验密码；各账号会话与记忆互相隔离」。
 
 <img src="docs/images/ui/02-user-switcher.png" alt="账号下拉" width="900" />
 
-**② 打开登录弹窗**：点击「登录其他账号」。
+**② 选择账号 → 打开登录弹窗**：点击下拉里的任一账号（或「登录其他账号」）会带出该账号**并弹出登录框校验密码**，不再一键直接切换。
 
 <img src="docs/images/ui/03-login-dialog.png" alt="登录弹窗" width="900" />
 
-**③ 输入凭据**：支持手机号或用户名登录，演示账号默认密码 `123456`。
+**③ 输入凭据**：支持手机号或用户名登录（输入过程中会实时检索账号给出提示），演示账号默认密码 `123456`。
 
 <img src="docs/images/ui/04-login-filled.png" alt="填写登录信息" width="900" />
 
@@ -207,7 +208,7 @@ uv run pytest -q        # 335 条全绿
 
 <img src="docs/images/ui/05-login-success.png" alt="登录成功" width="900" />
 
-**⑤ 注册新账号**：在账号下拉中点击「注册新账号」，手机号与密码为必填项，注册成功后直接登录并写回账号数据库。
+**⑤ 注册新账号**：在账号下拉中点击「注册新账号」，手机号、密码、确认密码为必填项（密码 ≥ 6 位），可选填用户名与机主姓名；注册成功后直接登录，账号与开户基线数据在同一事务内落库。
 
 <img src="docs/images/ui/06-register-dialog.png" alt="注册弹窗" width="900" />
 
@@ -215,11 +216,11 @@ uv run pytest -q        # 335 条全绿
 
 在输入框输入 `帮我查一下话费余额`，回车发送。
 
-意图分流 `agent_service` → think 决定调用 `query_balance` → 返回账户余额与本月实时话费 → reflect 校验通过。右侧面板同步显示轮次、会话 ID、路由 `agent_loop` 与技能调用次数。
+意图分流 `agent_service` → think 决定调用 `query_balance` → 返回账户余额与本月实时话费 → reflect 校验通过。右侧面板同步显示轮次、会话 ID、路由 `agent_loop` 与工具调用次数。
 
 <img src="docs/images/ui/07-balance-query.png" alt="余额查询" width="900" />
 
-**展开思考过程**：点击「思考过程 19 步」可展开本轮全部中间事件（profile_loaded、query_rewrite、intent_router、agent_start、技能调用、技能返回……），每一步都可单独展开查看细节，用于演示全链路可观测性。
+**展开思考过程**：点击「思考过程 19 步」可展开本轮全部中间事件（profile_loaded、query_rewrite、intent_router、agent_start、工具调用、工具返回……），每一步都可单独展开查看细节，用于演示全链路可观测性。
 
 <img src="docs/images/ui/08-thinking-expanded.png" alt="思考过程展开" width="900" />
 
@@ -327,17 +328,22 @@ uv run congclaw --approval-mode inline tui # 指定审批策略
 
 审批模式支持 `inline`（默认询问）/ `auto`（自动批准，演示用）/ `deny`（一律拒绝）。CLI/TUI 与 Web UI 走同一个后端，因此沉淀、回流等能力完全一致，只是审核动作在 Web UI 后台管理里操作更直观。
 
-## Skill 热插拔演示
+## 能力热插拔演示
 
-服务运行中向外部 Skill 目录（默认 `data/skills/`）新增一个 Skill 文件，无需重启即被注册中心发现并可在下一轮对话调用：
+服务运行中向外部目录新增能力文件，无需重启即被注册中心发现：**原子工具**（`data/tools/`）当轮进入模型可调用工具表，**编排技能**（`data/skills/`）被下一轮意图路由识别：
 
 ```bash
-# 方式一：API 热注册
+# 原子工具：POST 到 /api/v1/tools，文件模块级暴露 TOOL
+curl -X POST http://127.0.0.1:8000/api/v1/tools -H "Content-Type: application/json" -d @new_tool.json
+curl http://127.0.0.1:8000/api/v1/tools                  # 查看当前工具列表（含 bind_tools 用的 OpenAI 描述）
+curl -X DELETE http://127.0.0.1:8000/api/v1/tools/{name} # 热卸载
+
+# 编排技能：POST 到 /api/v1/skills，文件模块级暴露 SKILL
 curl -X POST http://127.0.0.1:8000/api/v1/skills -H "Content-Type: application/json" -d @new_skill.json
 
-# 方式二：直接往 data/skills/ 目录写 .py 文件，watcher 线程按 SKILL_WATCH_INTERVAL 轮询发现
-curl http://127.0.0.1:8000/api/v1/skills          # 查看当前 Skill 列表
-curl -X DELETE http://127.0.0.1:8000/api/v1/skills/{name}   # 热卸载
+# 也可直接往 data/tools/、data/skills/ 写 .py 文件，watcher 线程按 HOTLOAD_WATCH_INTERVAL 轮询发现
+curl http://127.0.0.1:8000/api/v1/skills                 # 查看当前编排技能列表
+curl -X DELETE http://127.0.0.1:8000/api/v1/skills/{name} # 热卸载
 ```
 
 ## 自动化评测
@@ -359,7 +365,7 @@ curl http://127.0.0.1:8000/api/v1/eval/reports/{id}     # 报告详情
 | `/api/v1/chat` | POST（SSE） | 多轮对话主入口，流式返回 |
 | `/api/v1/auth/login`、`/register`、`/accounts` | POST/GET | 账号登录、注册、账号检索 |
 | `/api/v1/users` | GET | 账号列表（前端用户切换下拉） |
-| `/api/v1/sessions` | GET | 历史会话列表（支持按用户工作区前缀过滤） |
+| `/api/v1/sessions` | GET | 历史会话列表（`phone` 为主过滤键，另支持 `workspace_prefix`；无归属的历史会话带 `legacy` 标记） |
 | `/api/v1/sessions/{id}` | GET | 单会话详情（含 recent_turns，用于历史回放） |
 | `/api/v1/admin/login` | POST | 管理员口令校验 |
 | `/api/v1/admin/db/tables`、`/rows` | GET/POST/PUT/DELETE | 后台数据表浏览与增删改 |
@@ -369,7 +375,8 @@ curl http://127.0.0.1:8000/api/v1/eval/reports/{id}     # 报告详情
 | `/api/v1/faq/{faq_id}` | GET | 单条 FAQ 详情（含同义问法与溯源） |
 | `/api/v1/faq/{faq_id}/status` | PUT | 审核状态流转，触及已发布集合时自动回流 |
 | `/api/v1/faq/reflow` | POST | 手动重跑回流（失败返回 500，便于显式重试） |
-| `/api/v1/skills` | GET/POST/DELETE | Skill 列表、热注册、热卸载 |
+| `/api/v1/tools` | GET/POST/DELETE | 原子工具列表（返回 `total` / `builtin_count` / `external_count`，含 OpenAI 工具描述）、热注册、热卸载 |
+| `/api/v1/skills` | GET/POST/DELETE | 编排技能列表（返回 `total` / `builtin_count` / `external_count`，含 `intent_hint`）、热注册、热卸载 |
 | `/api/v1/knowledge/ingest` | POST | 知识库文档解析入库（另含 `/ingest/upload`、`/stats`） |
 | `/api/v1/eval/run` | POST | 触发评测流水线 |
 | `/api/v1/eval/reports/{id}` | GET | 获取评测报告 |
@@ -378,18 +385,21 @@ curl http://127.0.0.1:8000/api/v1/eval/reports/{id}     # 报告详情
 ## 目录结构
 
 ```text
-CongAgent/
+CongClaw/
 ├─ src/congclaw/
-│  ├─ api/            # FastAPI app、路由（chat/auth/sessions/users/skills/knowledge/eval/admin/faq）
+│  ├─ api/            # FastAPI app、路由（chat/auth/sessions/users/tools/skills/knowledge/eval/admin/faq）
 │  ├─ graph/          # 客服对话主图：state/nodes/workflow/memory/profile_store
 │  ├─ rag/            # RAG 子图：parsing/ingest 离线入库 + state/nodes/workflow 在线检索
 │  │                  #   retrieval（BM25/稠密/精排）store（SQLite 父子分片）vectorstore（Milvus）
 │  ├─ agent/          # Agent 推理子图：think / act（并行工具编排）/ reflect
 │  ├─ faq/            # 常见问答沉淀子图：gate（门控规则）/nodes（判重·抽取·落库）/store/reflow/workflow
-│  ├─ skills/         # Skill 基类、registry 动态注册中心、catalog 六个业务 Skill
-│  ├─ eval/           # 评测流水线：collector/normalizer/rule_checks/llm_judge/report/runner
-│  ├─ db/             # SQLite 异步引擎（aiosqlite + WAL）、schema.sql、ORM 模型
-│  ├─ core/           # trace、approval、checkpoint、session（SQLite 持久化）
+│  ├─ tools/          # 原子工具层：base 基类 Tool + registry 动态注册中心
+│  │                  #   catalog 六个业务工具 + todo_tool（待办清单写入工作区 TODO.md）
+│  ├─ skills/         # 编排技能层：base 基类 Skill + registry 动态注册中心 + catalog 四个编排技能
+│  ├─ eval/           # 评测流水线：collector/normalizer/rule_checks/trace_checks/trace_metrics/llm_judge/report/runner
+│  ├─ db/             # SQLite 异步引擎（aiosqlite + WAL）、schema.sql、ORM 模型、开户基线 baseline
+│  ├─ domain/         # 领域仓储：auth_store（账号检索/登录/注册）、business_store（业务数据读写）
+│  ├─ core/           # trace、approval、checkpoint、session（SQLite 持久化）、hotload（能力热加载基座）
 │  ├─ prompts/        # 意图识别/查询重写/RAG/Agent 思考与反思/FAQ 沉淀抽取 prompt
 │  ├─ providers/      # ChatOpenAI 兼容 LLM 创建
 │  └─ cli/            # HTTP/SSE 演示客户端（Rich CLI + Textual TUI）
@@ -397,11 +407,11 @@ CongAgent/
 ├─ knowledge/         # 电信知识库原始文档（套餐/资费/宽带/常见问答 FAQ，md/html/txt）
 │                     #   FAQ沉淀库.md 为回流产物，由审核发布自动重渲染，不要手工编辑
 ├─ models/            # BGE-M3、bge-reranker 本地模型
-├─ data/              # telecom_cs.db、milvus_lite.db、外部 skills 目录、增量同步指纹清单
+├─ data/              # telecom_cs.db、milvus_lite.db、外部 tools/skills 目录、增量同步指纹清单
 ├─ docs/images/ui/    # README 使用的 Web UI 分步截图
 ├─ eval/reports/      # 评测报告输出
 ├─ scripts/           # 模型下载/冒烟、Milvus Lite 验证、知识库增量同步（watch_knowledge.py）
-└─ tests/             # 335 条用例：意图分流/RAG 子图/Skill 热插拔/记忆/评测/FAQ 沉淀/端到端
+└─ tests/             # 用例：意图分流/RAG 子图/能力热插拔/记忆/评测/FAQ 沉淀/端到端
 ```
 
 ## 关键设计说明
@@ -413,8 +423,8 @@ CongAgent/
 - **业务写操作人工确认**：`change_package` 标记 `requires_confirmation`，执行前落库 `pending_approval` 并向用户推送确认话术，用户回复「确认」后才真正执行；下一轮进入 `approval_resumed` 分支续跑。
 - **沉淀门控单一口径**：主图条件边 `sediment_route` 与子图首节点 `rule_gate` 共用 [gate.py](./src/congclaw/faq/gate.py) 的同一份判定——路由白名单、有实质结果、非兜底、无未决确认、问句≥6 字、无隐私特征。不通过则**根本不进子图**，既省 LLM 调用，也杜绝把"我的余额是多少"这类个人事实沉淀成知识；纯审批轮（"确认"）会回溯到上一轮真实诉求再沉淀。
 - **回流幂等**：审核触及已发布集合时，把全部已发布条目整份重渲染为 `knowledge/FAQ沉淀库.md` 再按 `doc_source` 覆盖入库——归档条目因不再出现于重渲染结果而随之清除，无需单独删除逻辑；渲染时每条 FAQ 收紧为一个连续段落，保证父分片同时含问题与答案。
-- **按用户的会话与记忆隔离**：每位用户拥有独立工作区前缀 `.congclaw/workspaces/user-<phone>/`，会话列表按前缀过滤，长期记忆按号码维度落 `user_profile`。
-- **热插拔注册中心**：`dict[路径→注销时 mtime]` 语义——内置 Skill 注销后文件内容变更自动恢复；外部 Skill 增删改经 watcher 轮询即生效。
+- **按用户的会话与记忆隔离**：每位用户拥有独立工作区前缀 `.congclaw/workspaces/user-<phone>/`，其下每个会话一个 `session-<时间戳>-<随机>` 子目录；会话列表以 `session.phone` 为主过滤键、工作区前缀为兜底，长期记忆按号码维度落 `user_profile`。多用户改造前无归属的历史会话视为默认演示用户的资产（返回项带 `legacy` 标记），不会因引入用户维度而消失。
+- **热插拔注册中心**：工具与技能各自一套注册中心，共用 `dict[路径→注销时 mtime]` 语义——内置能力注销后文件内容变更自动恢复；外部能力增删改经 watcher 轮询即生效。
 - **性能**：本地 CPU 热身后单轮检索中位 2.06s / P95 2.41s（`RAG_RERANK_INPUT_TOP_N=8`）；首次冷启动约 32s 已由服务启动后台预热消除。调 `RAG_RERANK_INPUT_TOP_N=6` 可压到约 1.7s（弱相关问召回略有损失），或上 GPU/ONNX 量化进一步压缩。
 
 ## 演示彩排路径
@@ -432,7 +442,8 @@ cd ui && npm install && npm run dev
 #    → Sessions 会话列表 → 管理员 → 数据库管理 → RAG 知识库管理 → 分片预览
 #    → FAQ 沉淀库 → 条目详情 → 通过/发布触发回流 → 回对话框验证新问答可被检索
 
-# 4.（可选）热插拔 Skill（服务不重启）
+# 4.（可选）热插拔能力（服务不重启）
+curl -X POST http://127.0.0.1:8000/api/v1/tools  -H "Content-Type: application/json" -d @demo_tool.json
 curl -X POST http://127.0.0.1:8000/api/v1/skills -H "Content-Type: application/json" -d @demo_skill.json
 
 # 5.（可选）跑评测出报告

@@ -85,6 +85,11 @@ def print_custom_event(event: dict[str, Any]) -> None:
         return
     if event_type == "tool_result":
         result = event.get("result")
+        if result is None:
+            # Agent 子图原子工具事件：结果字段在顶层（ok / error / preview）
+            result = {"ok": event.get("ok"), "preview": event.get("preview") or ""}
+            if event.get("error"):
+                result["error"] = event["error"]
         style = "green"
         if isinstance(result, dict) and result.get("ok") is False:
             style = "red"
@@ -405,6 +410,8 @@ def _format_tool_result(result: Any) -> str:
         lines.append("stdout:\n" + _shorten(result["stdout"], 500))
     if "stderr" in result and result["stderr"]:
         lines.append("stderr:\n" + _shorten(result["stderr"], 500))
+    if result.get("preview"):
+        lines.append("preview:\n" + _shorten(result["preview"], 500))
     for path_key in ("stdout_path", "stderr_path"):
         if result.get(path_key):
             lines.append(f"{path_key}: {result[path_key]}")

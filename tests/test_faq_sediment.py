@@ -39,7 +39,7 @@ from congclaw.rag.ingest import IngestStats
 @pytest.fixture(autouse=True)
 def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DB_PATH", str(tmp_path / "faq.db"))
-    monkeypatch.setenv("SKILL_WATCH", "0")
+    monkeypatch.setenv("HOTLOAD_WATCH", "0")
     monkeypatch.setenv("RAG_PREWARM", "0")
     # 回流会往 knowledge/ 写文档，测试统一改到临时目录，避免污染真实知识库
     monkeypatch.setenv("KNOWLEDGE_DIR", str(tmp_path / "knowledge"))
@@ -72,7 +72,7 @@ def _agent_turn(**over: Any) -> dict[str, Any]:
     state: dict[str, Any] = {
         "intent_route": "agent_loop",
         "final_answer": "已为您查询到当前话费余额 86.50 元。",
-        "tool_traces": [{"type": "skill_result", "name": "query_balance", "ok": True}],
+        "tool_traces": [{"type": "tool_result", "name": "query_balance", "ok": True}],
         "rewritten_task": "帮我查一下话费余额",
         "task": "帮我查一下话费余额",
     }
@@ -122,15 +122,15 @@ def test_gate_rejects_rag_turn_without_sources() -> None:
     assert (passed, reason) == (False, "no_evidence")
 
 
-def test_gate_rejects_agent_turn_without_successful_skill() -> None:
-    """Skill 调用失败（ok=False）不足以支撑可复用结论。"""
+def test_gate_rejects_agent_turn_without_successful_tool() -> None:
+    """工具调用失败（ok=False）不足以支撑可复用结论。"""
     passed, reason = evaluate_sediment_gate(
-        _agent_turn(tool_traces=[{"type": "skill_result", "name": "query_balance", "ok": False}])
+        _agent_turn(tool_traces=[{"type": "tool_result", "name": "query_balance", "ok": False}])
     )
     assert (passed, reason) == (False, "no_tool_result")
 
 
-def test_gate_rejects_agent_turn_without_any_skill() -> None:
+def test_gate_rejects_agent_turn_without_any_tool() -> None:
     passed, reason = evaluate_sediment_gate(_agent_turn(tool_traces=[]))
     assert (passed, reason) == (False, "no_tool_result")
 
@@ -396,7 +396,7 @@ def test_subgraph_merge_falls_back_to_create_when_target_missing(
         _sub_input(
             route="agent_loop",
             sources=[],
-            tool_traces=[{"type": "skill_result", "name": "repair", "ok": True}],
+            tool_traces=[{"type": "tool_result", "name": "repair", "ok": True}],
             rewritten_task="宽带报修后多久上门",
             task="宽带报修后多久上门",
         )

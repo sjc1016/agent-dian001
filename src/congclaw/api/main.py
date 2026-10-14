@@ -3,7 +3,7 @@
 - 生命周期：启动时执行 :func:`congclaw.db.init_db` 建库（幂等），
   并预留模型预热占位（阶段 3/4 加载 BGE-M3 / reranker）。
 - 健康检查：``GET /health`` 返回服务状态与数据库版本。
-- 路由挂载：阶段 1 仅挂载 ``/api/v1/chat``，后续阶段追加 sessions / skills / knowledge / eval。
+- 路由挂载：阶段 1 仅挂载 ``/api/v1/chat``，后续阶段追加 sessions / tools / skills / knowledge / eval。
 """
 
 from __future__ import annotations
@@ -23,10 +23,12 @@ from congclaw.api.routes.faq import router as faq_router
 from congclaw.api.routes.knowledge import router as knowledge_router
 from congclaw.api.routes.sessions import router as sessions_router
 from congclaw.api.routes.skills import router as skills_router
+from congclaw.api.routes.tools import router as tools_router
 from congclaw.api.routes.users import router as users_router
 from congclaw.db import init_db, resolve_db_path
 from congclaw.db.engine import dispose_engine
-from congclaw.skills.registry import get_registry, shutdown_registry
+from congclaw.skills.registry import get_skill_registry, shutdown_skill_registry
+from congclaw.tools.registry import get_tool_registry, shutdown_tool_registry
 
 
 def _prewarm_rag_models() -> None:
@@ -47,14 +49,16 @@ async def lifespan(app: FastAPI):
     load_dotenv()
     # 建库（幂等）；RAG 模型后台预加载（RAG_PREWARM=0 可关闭）
     await init_db()
-    # Skill 注册中心：扫描内置/外部目录并开启文件监听热加载
-    get_registry()
+    # 注册中心：扫描内置/外置目录并开启文件监听热加载（工具与编排技能各一套）
+    get_tool_registry()
+    get_skill_registry()
     if os.getenv("RAG_PREWARM", "1") != "0":
         threading.Thread(target=_prewarm_rag_models, name="rag-prewarm", daemon=True).start()
     try:
         yield
     finally:
-        shutdown_registry()
+        shutdown_skill_registry()
+        shutdown_tool_registry()
         await dispose_engine()
 
 
@@ -70,6 +74,7 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(knowledge_router)
 app.include_router(skills_router)
+app.include_router(tools_router)
 app.include_router(eval_router)
 app.include_router(faq_router)
 app.include_router(sessions_router)

@@ -97,7 +97,10 @@ class CongGraphState(TypedDict, total=False):
     approval_mode: str  # inline / auto / deny
     pending_approval: dict[str, Any] | None
     approval_resolution: str  # confirmed / cancelled / unknown
-    tool_traces: list[dict[str, Any]]  # Skill 调用轨迹（P6 评测消费）
+    # 编排驱动：intent_router 选中的编排型 Skill 与其槽位（为空则回退 Agent 自主规划）
+    skill_name: str
+    skill_slots: dict[str, Any]
+    tool_traces: list[dict[str, Any]]  # 工具调用轨迹（P6 评测消费）
     # 阶段 7：常见问答沉淀（回合结束后的知识沉淀结果）
     faq_sediment_action: str  # create / merge / skip / not_eligible
     faq_entry_id: str  # 落库后的 FAQ 编号（未落库为空）
@@ -119,3 +122,5 @@ class CongGraphState(TypedDict, total=False):
     history_summary: str
     last_error: str
     metadata: dict[str, Any]
+    # 测试注入：编排技能注册中心替身（生产取进程单例）
+    _skills: Any

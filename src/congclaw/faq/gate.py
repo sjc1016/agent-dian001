@@ -67,7 +67,7 @@ def evaluate_sediment_gate(state: dict[str, Any]) -> tuple[bool, str]:
     if route == "rag_answer":
         if not state.get("sources"):
             return False, "no_evidence"
-    elif not _has_successful_skill(state.get("tool_traces")):
+    elif not _has_successful_tool(state.get("tool_traces")):
         return False, "no_tool_result"
 
     question = resolve_sediment_question(state)
@@ -120,10 +120,10 @@ def _has_privacy(text: str) -> bool:
     return any(pattern.search(text or "") for pattern in _PRIVACY_PATTERNS)
 
 
-def _has_successful_skill(traces: Any) -> bool:
+def _has_successful_tool(traces: Any) -> bool:
     if not isinstance(traces, list):
         return False
     return any(
-        isinstance(event, dict) and event.get("type") == "skill_result" and event.get("ok")
+        isinstance(event, dict) and event.get("type") == "tool_result" and event.get("ok")
         for event in traces
     )

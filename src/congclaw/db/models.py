@@ -19,6 +19,7 @@ class SessionModel(Base):
     """多轮会话状态表。
 
     ``workspace`` 是主键，与会话的物理工作区一一对应；
+    ``phone`` 记录会话归属用户（多用户隔离），未归属用户时为空串；
     ``recent_turns`` / ``pending_slots`` 以 JSON 文本存储。
     """
 
@@ -26,6 +27,7 @@ class SessionModel(Base):
 
     session_id: Mapped[str] = mapped_column(nullable=False)
     workspace: Mapped[str] = mapped_column(primary_key=True)
+    phone: Mapped[str] = mapped_column(nullable=False, default="")
     turn_index: Mapped[int] = mapped_column(nullable=False, default=0)
     last_route: Mapped[str] = mapped_column(nullable=False, default="")
     last_task: Mapped[str] = mapped_column(nullable=False, default="")
@@ -123,7 +125,7 @@ class PendingApprovalModel(Base):
 
     approval_id: Mapped[str] = mapped_column(primary_key=True)
     workspace: Mapped[str] = mapped_column(nullable=False)
-    skill_name: Mapped[str] = mapped_column(nullable=False)
+    tool_name: Mapped[str] = mapped_column(nullable=False)
     args_json: Mapped[str] = mapped_column(nullable=False, default="{}")
     summary: Mapped[str] = mapped_column(nullable=False, default="")
     status: Mapped[str] = mapped_column(nullable=False, default="pending")

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from congclaw.core.paths import find_project_root
+from congclaw.core.paths import find_project_root, phone_from_workspace
 from congclaw.core.security import DEFAULT_PASSWORD, hash_password
 from congclaw.db.baseline import backfill_account_baselines
 
@@ -104,6 +104,44 @@ async def _add_account_auth_columns(connection: aiosqlite.Connection) -> None:
             await connection.execute(f"ALTER TABLE account ADD COLUMN {name} {ddl}")
 
 
+async def _add_session_phone_column(connection: aiosqlite.Connection) -> None:
+    """为已存在的 session 表补齐 phone 列（须在建表脚本之前调用）。
+
+    schema.sql 会为 ``session(phone)`` 建索引，存量库若缺列必须先 ALTER 补上，
+    否则 ``executescript`` 会以「no such column: phone」中断建库。
+    """
+    cursor = await connection.execute("PRAGMA table_info(session)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if columns and "phone" not in columns:
+        await connection.execute("ALTER TABLE session ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+
+
+async def _rename_pending_approval_column(connection: aiosqlite.Connection) -> None:
+    """把存量 pending_approval.skill_name 改名为 tool_name（须在建表脚本之前调用）。
+
+    该列语义一直是「待人工确认的原子工具名」，统一命名后跟随 schema.sql 变更；
+    CREATE TABLE IF NOT EXISTS 不会改已存在的表，故存量库需显式改名。
+    """
+    cursor = await connection.execute("PRAGMA table_info(pending_approval)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if columns and "skill_name" in columns and "tool_name" not in columns:
+        await connection.execute(
+            "ALTER TABLE pending_approval RENAME COLUMN skill_name TO tool_name"
+        )
+
+
+async def _migrate_session_phone(connection: aiosqlite.Connection) -> None:
+    """回填 session.phone（幂等）：从 workspace 路径解析 ``user-<phone>`` 归属。"""
+    cursor = await connection.execute("SELECT workspace FROM session WHERE phone = ''")
+    workspaces = [row[0] for row in await cursor.fetchall()]
+    for workspace in workspaces:
+        phone = phone_from_workspace(workspace)
+        if phone:
+            await connection.execute(
+                "UPDATE session SET phone = ? WHERE workspace = ?", (phone, workspace)
+            )
+
+
 async def _migrate_account_auth(connection: aiosqlite.Connection) -> None:
     """回填账号鉴权数据（幂等，可重复执行）。
 
@@ -163,6 +201,10 @@ async def init_db(db_path: Path | None = None) -> Path:
         await connection.execute("PRAGMA foreign_keys=ON")
         # 建表脚本内已有引用新列的种子 INSERT，存量库必须先补列
         await _add_account_auth_columns(connection)
+        # schema.sql 会为 session(phone) 建索引，存量库同样必须先补列
+        await _add_session_phone_column(connection)
+        # pending_approval 旧列名 skill_name → tool_name（存量库改名）
+        await _rename_pending_approval_column(connection)
         await connection.executescript(schema_sql)
         # 阶段 2：旧库迁移——session 表补齐跨轮计数列（CREATE IF NOT EXISTS 不会改已存在的表）
         cursor = await connection.execute("PRAGMA table_info(session)")
@@ -171,6 +213,8 @@ async def init_db(db_path: Path | None = None) -> Path:
             await connection.execute("ALTER TABLE session ADD COLUMN clarify_count INTEGER NOT NULL DEFAULT 0")
         if "unknown_count" not in columns:
             await connection.execute("ALTER TABLE session ADD COLUMN unknown_count INTEGER NOT NULL DEFAULT 0")
+        # 多用户会话归属：从 workspace 路径回填 session.phone
+        await _migrate_session_phone(connection)
         # 阶段 6：登录鉴权所需的账号口令回填与用户名唯一索引
         await _migrate_account_auth(connection)
         # 阶段 6：开户基线——为缺少 user_package / user_profile 的存量账号补齐，

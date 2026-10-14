@@ -9,7 +9,7 @@ Keep everything needed to resume the conversation:
 - confirmed business facts (balance, package, fault ticket, ongoing handling)
 - current intent, pending slots to clarify, and clarification round count
 - retrieved knowledge highlights and referenced sources
-- tool/Skill findings (query results, order status) and latest fallback reason
+- tool findings (query results, order status) and latest fallback reason
 - next suggested response and any risks or blockers
 
 Drop redundant transcript detail:

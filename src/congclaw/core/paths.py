@@ -1,20 +1,35 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 
-def find_project_root(start: Path | None = None) -> Path:
-    """Find the nearest project root marker from ``start`` upward."""
-    current = (start or Path.cwd()).resolve()
-    if current.is_file():
-        current = current.parent
-
-    for candidate in (current, *current.parents):
+def _find_marker_root(base: Path) -> Path | None:
+    """从 ``base`` 向上查找最近的 ``pyproject.toml`` / ``.git`` 标记目录。"""
+    base = base.parent if base.is_file() else base
+    for candidate in (base, *base.parents):
         if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
             return candidate
-    return current
+    return None
+
+
+def find_project_root(start: Path | None = None) -> Path:
+    """定位项目根目录。
+
+    默认（``start`` 缺省）优先从本模块所在的源码树向上查找项目标记，
+    这样无论从哪个工作目录启动（例如在 ``C:\\Users\\...`` 下运行后端），
+    工作区与数据库都稳定落在项目目录内，不会跟着 ``cwd`` 落到 C 盘。
+    显式传入 ``start`` 时按该路径向上查找，找不到标记时退回该路径本身。
+    """
+    if start is None:
+        source_root = _find_marker_root(Path(__file__).resolve())
+        if source_root is not None:
+            return source_root
+        start = Path.cwd()
+    resolved = Path(start).resolve()
+    return _find_marker_root(resolved) or resolved
 
 
 def default_workspace(root: Path | None = None) -> Path:
@@ -34,6 +49,20 @@ def new_task_workspace(root: Path | None = None) -> Path:
 # 引入多用户隔离之前，会话直接落在 ``<root>/<dir>/workspaces/workspace-*`` 下，
 # 没有 ``user-<phone>`` 归属目录。``.mokioclaw`` 是更早一代的目录命名。
 LEGACY_WORKSPACE_DIRS = (".congclaw", ".mokioclaw")
+
+# 多用户工作区约定：``.../workspaces/user-<phone>/session-<时间戳>-<随机>``
+_USER_WORKSPACE_PATTERN = re.compile(r"user-([0-9A-Za-z]+)")
+
+
+def phone_from_workspace(workspace: str | Path) -> str:
+    """从工作区路径中提取归属用户号码（``user-<phone>`` 目录段）。
+
+    返回空串表示该工作区没有 ``user-<phone>`` 归属（多用户改造前的历史工作区，
+    或未绑定用户的临时工作区）。Windows 路径的反斜杠会先归一化为正斜杠。
+    """
+    normalized = str(workspace).replace("\\", "/")
+    match = _USER_WORKSPACE_PATTERN.search(normalized)
+    return match.group(1) if match else ""
 
 
 def legacy_workspace_prefixes(root: Path | None = None) -> list[str]:

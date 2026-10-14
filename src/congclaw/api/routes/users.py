@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from congclaw.skills.business_store import DEFAULT_DEMO_PHONE, list_accounts
+from congclaw.domain.business_store import DEFAULT_DEMO_PHONE, list_accounts
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 

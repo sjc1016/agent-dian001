@@ -10,10 +10,13 @@ INSERT OR IGNORE INTO app_meta (key, value) VALUES ('schema_version', '0');
 
 -- 阶段 1：多轮会话状态（session.json 文件迁移到此表）
 -- workspace 作为会话的物理定位键，与旧文件路径一一对应；
+-- phone 为会话归属用户的显式记录（多用户隔离），由 workspace 路径中的
+-- ``user-<phone>`` 段回填，未归属用户时为空串；
 -- recent_turns / pending_slots 以 JSON 文本存储，便于直接反序列化为 Python 对象。
 CREATE TABLE IF NOT EXISTS session (
     session_id      TEXT NOT NULL,
     workspace       TEXT PRIMARY KEY,
+    phone           TEXT NOT NULL DEFAULT '',
     turn_index      INTEGER NOT NULL DEFAULT 0,
     last_route      TEXT NOT NULL DEFAULT '',
     last_task       TEXT NOT NULL DEFAULT '',
@@ -27,6 +30,8 @@ CREATE TABLE IF NOT EXISTS session (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_session_phone ON session(phone);
 
 -- 阶段 3：RAG 知识库父子分片元信息
 -- child 细粒度切片入 Milvus（向量按 child_id 关联），父分片文本由同 parent_id
@@ -99,12 +104,12 @@ CREATE TABLE IF NOT EXISTS fault_ticket (
 CREATE INDEX IF NOT EXISTS idx_fault_ticket_phone ON fault_ticket(phone);
 CREATE INDEX IF NOT EXISTS idx_fault_ticket_status ON fault_ticket(status);
 
--- 阶段 4（P4-16）：跨轮人工确认。写操作 Skill（如套餐变更）办理前落一条
+-- 阶段 4（P4-16）：跨轮人工确认。写操作工具（如套餐变更）办理前落一条
 -- pending 记录，用户下一轮回复"确认/取消"后由 agent 子图恢复执行或作废。
 CREATE TABLE IF NOT EXISTS pending_approval (
     approval_id     TEXT PRIMARY KEY,
     workspace       TEXT NOT NULL,
-    skill_name      TEXT NOT NULL,
+    tool_name       TEXT NOT NULL,
     args_json       TEXT NOT NULL DEFAULT '{}',
     summary         TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'pending', -- pending/approved/executed/cancelled/failed

@@ -18,9 +18,9 @@ from congclaw.graph.workflow import build_entry_workflow
 
 @pytest.fixture(autouse=True)
 def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """每个用例独立 SQLite 库并关闭 Skill 目录监听线程。"""
+    """每个用例独立 SQLite 库并关闭能力（工具/技能）目录监听线程。"""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "intent-test.db"))
-    monkeypatch.setenv("SKILL_WATCH", "0")
+    monkeypatch.setenv("HOTLOAD_WATCH", "0")
 
 
 def _fake_model(category: str, confidence: float = 0.9, reason: str = "test") -> type:
@@ -199,6 +199,109 @@ def test_clear_intent_resets_counts_across_turns(monkeypatch) -> None:
     assert updates["intent_router"]["intent_route"] == "rag_answer"
     assert updates["intent_router"]["clarify_count"] == 0
     assert updates["intent_router"]["unknown_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 编排驱动：intent_router 一次调用同时产出 category + skill + slots
+# ---------------------------------------------------------------------------
+
+
+def _fake_model_with_skill(
+    category: str,
+    skill: str,
+    slots: dict[str, Any] | None = None,
+    *,
+    confidence: float = 0.95,
+) -> Any:
+    """返回带 skill/slots 的意图 JSON 的模型实例。"""
+    payload = json.dumps(
+        {
+            "category": category,
+            "confidence": confidence,
+            "reason": "test",
+            "missing_slots": [],
+            "skill": skill,
+            "slots": slots or {},
+        },
+        ensure_ascii=False,
+    )
+
+    class FakeModel:
+        def invoke(self, messages):
+            return AIMessage(content=payload)
+
+        async def ainvoke(self, messages, **kwargs):
+            return AIMessage(content=payload)
+
+    return FakeModel()
+
+
+def test_agent_service_locks_skill_with_slots(monkeypatch) -> None:
+    """agent_service + 槽位齐全：intent_router 直接锁定编排技能，路由仍为 agent_loop。"""
+    monkeypatch.setattr(
+        "congclaw.graph.nodes.create_model",
+        lambda: _fake_model_with_skill("agent_service", "balance_query", {"phone": "13800138000"}),
+    )
+    _stub_agent_direct_reply(monkeypatch, "您当前可用余额为 0 元（测试桩）。")
+
+    updates = _stream_updates({"task": "帮我查一下本月话费余额"})
+
+    intent = updates["intent_router"]
+    assert intent["intent_route"] == "agent_loop"  # 路由名不变，下游白名单无需改动
+    assert intent["skill_name"] == "balance_query"
+    assert intent["skill_slots"] == {"phone": "13800138000"}
+
+
+def test_agent_service_skill_missing_required_slot_falls_back_to_agent(monkeypatch) -> None:
+    """编排必填槽位缺失：不锁定编排技能，缺参并入待补槽位，交 Agent 追问。"""
+    monkeypatch.setattr(
+        "congclaw.graph.nodes.create_model",
+        lambda: _fake_model_with_skill("agent_service", "package_change", {}),
+    )
+    _stub_agent_direct_reply(monkeypatch, "请问您想更换成哪个套餐档位？")
+
+    updates = _stream_updates({"task": "帮我改一下套餐"})
+
+    intent = updates["intent_router"]
+    assert intent["skill_name"] == ""
+    assert intent["skill_slots"] == {}
+    assert "target_package" in intent["pending_slots"]
+
+
+def test_agent_service_unknown_skill_name_ignored(monkeypatch) -> None:
+    """模型给出未注册/非编排的 skill 名：直接忽略，回退 Agent 自主规划。"""
+    monkeypatch.setattr(
+        "congclaw.graph.nodes.create_model",
+        lambda: _fake_model_with_skill("agent_service", "query_balance", {}),
+    )
+    _stub_agent_direct_reply(monkeypatch, "好的。")
+
+    updates = _stream_updates({"task": "帮我查一下本月话费余额"})
+
+    assert updates["intent_router"]["skill_name"] == ""
+
+
+def test_parse_skill_choice_filters_slots() -> None:
+    """解析编排选择：未声明槽位被丢弃，必填缺失时报告 missing。"""
+    from congclaw.graph.nodes import _parse_skill_choice
+    from congclaw.skills.registry import BUILTIN_CATALOG_DIR, SkillRegistry
+
+    registry = SkillRegistry(builtin_dir=BUILTIN_CATALOG_DIR, watch=False)
+
+    assert _parse_skill_choice({"skill": "nope"}, registry) == ("", {}, [])
+    assert _parse_skill_choice({"skill": "query_balance"}, registry) == ("", {}, [])
+
+    name, slots, missing = _parse_skill_choice(
+        {"skill": "balance_query", "slots": {"phone": "13800138000", "x": 1}}, registry
+    )
+    assert name == "balance_query"
+    assert slots == {"phone": "13800138000"}  # 未声明槽位被丢弃
+    assert missing == []
+
+    name, slots, missing = _parse_skill_choice({"skill": "package_change"}, registry)
+    assert name == "package_change"
+    assert slots == {}
+    assert missing == ["target_package"]
 
 
 def test_session_counts_persist_across_turns(monkeypatch, tmp_path: Path) -> None:

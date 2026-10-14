@@ -9,7 +9,7 @@
                             └─ finalize（取消/无需工具/确认卡片）→ END
 
 关键设计：
-- 思考节点通过 Skill 注册中心实时 ``bind_tools``（热插拔工具当轮即可被发现）；
+- 思考节点通过工具注册中心实时 ``bind_tools``（热插拔工具当轮即可被发现）；
 - 写操作（change_package）在 inline 审批模式下先落 pending_approval 并返回确认卡片，
   用户下一轮回复"确认/取消"，由 approval_entry 恢复执行或作废（P4-16）；
 - 工具异常/反思失败计入 attempts，超阈值走静态兜底话术（P4-15）。
@@ -26,7 +26,13 @@ from uuid import uuid4
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
 
+from congclaw.agent.state import AgentSubState
 from congclaw.core.approval import ApprovalRequest, make_approval_request
+from congclaw.domain.business_store import (
+    DEFAULT_DEMO_PHONE,
+    save_pending_approval,
+    update_pending_approval,
+)
 from congclaw.graph.memory import compose_layered_content
 from congclaw.prompts.agent import (
     AGENT_FALLBACK_REPLY,
@@ -39,14 +45,10 @@ from congclaw.prompts.agent import (
     APPROVAL_CANCELLED_REPLY,
 )
 from congclaw.providers.openai_provider import create_model
-from congclaw.skills.base import SkillContext, SkillError
-from congclaw.skills.business_store import (
-    DEFAULT_DEMO_PHONE,
-    save_pending_approval,
-    update_pending_approval,
-)
-from congclaw.skills.registry import SkillRegistry, get_registry
-from congclaw.agent.state import AgentSubState
+from congclaw.skills.base import SkillContext
+from congclaw.skills.registry import SkillRegistry, get_skill_registry
+from congclaw.tools.base import ConfirmationRequired, ToolContext, ToolError
+from congclaw.tools.registry import ToolRegistry, get_tool_registry
 
 # ---------------------------------------------------------------------------
 # P4-16 辅助：跨轮"确认/取消"意图识别（规则优先，确定可测，不额外消耗 LLM）
@@ -84,7 +86,8 @@ async def approval_entry_node(state: AgentSubState) -> dict[str, Any]:
     pending = state.get("pending_approval") or None
     resolution = str(state.get("approval_resolution") or "unknown")
     if not pending:
-        return {"entry_decision": "think"}
+        # 主图 intent_router 选定编排技能时直接交编排执行（跳过 think）
+        return {"entry_decision": "skill" if _selected_skill(state) else "think"}
 
     approval_id = str(pending.get("approval_id") or "")
     if resolution == "cancelled":
@@ -94,7 +97,7 @@ async def approval_entry_node(state: AgentSubState) -> dict[str, Any]:
             {
                 "type": "approval_cancelled",
                 "approval_id": approval_id,
-                "skill_name": pending.get("skill_name", ""),
+                "tool_name": pending.get("tool_name", ""),
             }
         )
         return {
@@ -106,7 +109,7 @@ async def approval_entry_node(state: AgentSubState) -> dict[str, Any]:
     if resolution == "confirmed":
         call = {
             "id": f"call-{uuid4().hex[:8]}",
-            "name": str(pending.get("skill_name") or ""),
+            "name": str(pending.get("tool_name") or ""),
             "args": dict(pending.get("args") or {}),
             "approved": True,
         }
@@ -116,7 +119,7 @@ async def approval_entry_node(state: AgentSubState) -> dict[str, Any]:
             {
                 "type": "approval_resumed",
                 "approval_id": approval_id,
-                "skill_name": call["name"],
+                "tool_name": call["name"],
                 "args": call["args"],
             }
         )
@@ -128,15 +131,23 @@ async def approval_entry_node(state: AgentSubState) -> dict[str, Any]:
             # 注意：pending_approval 必须保留到 act_node，执行后才能回写 executed/failed
         }
 
-    # 用户没有明确确认/取消而是说了别的内容：旧确认单作废，按新诉求重新思考
+    # 用户没有明确确认/取消而是说了别的内容：旧确认单作废，按新诉求重新处理
     if approval_id:
         await update_pending_approval(approval_id, "cancelled")
     writer({"type": "approval_expired", "approval_id": approval_id})
-    return {"entry_decision": "think", "pending_approval": None}
+    return {
+        "entry_decision": "skill" if _selected_skill(state) else "think",
+        "pending_approval": None,
+    }
 
 
 def approval_entry_route(state: AgentSubState) -> str:
     return str(state.get("entry_decision") or "think")
+
+
+def _selected_skill(state: AgentSubState) -> str:
+    """主图 intent_router 选中的编排技能名（未选中返回空串）。"""
+    return str(state.get("skill_name") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +158,7 @@ def approval_entry_route(state: AgentSubState) -> str:
 async def think_node(state: AgentSubState) -> dict[str, Any]:
     """分析对话状态决定本轮工具调用；无需工具时直接给出追问/解释文本。"""
     writer = _get_writer()
-    registry = _get_registry(state)
+    registry = _get_tools(state)
     attempts = int(state.get("attempts", 0) or 0)
 
     messages = _build_think_messages(state, registry)
@@ -177,6 +188,7 @@ async def think_node(state: AgentSubState) -> dict[str, Any]:
         args = raw.get("args") or {}
         if not isinstance(args, dict):
             args = {}
+        # 只有原子工具能进工具表；编排技能名不在此表内，一律按未注册处理
         if registry.try_get(name) is None:
             unknown_names.append(name)
             continue
@@ -185,7 +197,7 @@ async def think_node(state: AgentSubState) -> dict[str, Any]:
         )
 
     if unknown_names:
-        writer({"type": "agent_unknown_skill", "names": unknown_names})
+        writer({"type": "agent_unknown_tool", "names": unknown_names})
 
     if valid_calls:
         writer(
@@ -229,8 +241,9 @@ def think_route(state: AgentSubState) -> str:
     return "finalize"
 
 
-def _build_think_messages(state: AgentSubState, registry: SkillRegistry) -> list[Any]:
+def _build_think_messages(state: AgentSubState, registry: ToolRegistry) -> list[Any]:
     system_prompt = AGENT_THINK_PROMPT
+    # 工具注册表只登记原子工具：编排技能不进 bind_tools，也不出现在候选表里
     catalog = registry.list_metadata()
     if catalog:
         lines = ["\n\n当前可用业务工具（热插拔注册表实时提供）："]
@@ -280,8 +293,8 @@ def _agent_memory_text(state: AgentSubState) -> str:
 
 async def act_node(state: AgentSubState) -> dict[str, Any]:
     writer = _get_writer()
-    registry = _get_registry(state)
-    context = SkillContext(
+    registry = _get_tools(state)
+    context = ToolContext(
         phone=str(state.get("phone") or DEFAULT_DEMO_PHONE),
         workspace=str(state.get("workspace") or ""),
         approval_mode=str(state.get("approval_mode") or "inline"),
@@ -293,8 +306,8 @@ async def act_node(state: AgentSubState) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
 
     for call in calls:
-        skill = registry.try_get(str(call.get("name") or ""))
-        if skill is None:
+        tool = registry.try_get(str(call.get("name") or ""))
+        if tool is None:
             results.append(
                 {
                     "call_id": call.get("id", ""),
@@ -302,20 +315,20 @@ async def act_node(state: AgentSubState) -> dict[str, Any]:
                     "ok": False,
                     "data": {},
                     "error": f"工具 {call.get('name')} 未注册（可能已被热卸载）",
-                    "error_code": "unknown_skill",
+                    "error_code": "unknown_tool",
                 }
             )
             continue
 
-        if skill.access == "write" and skill.requires_confirmation and not call.get("approved"):
+        if tool.access == "write" and tool.requires_confirmation and not call.get("approved"):
             if context.approval_mode == "auto":
                 call["approved"] = True
-                executable.append((call, skill))
+                executable.append((call, tool))
             elif context.approval_mode == "deny":
                 results.append(
                     {
                         "call_id": call.get("id", ""),
-                        "name": skill.name,
+                        "name": tool.name,
                         "ok": False,
                         "data": {},
                         "error": "当前审批策略为 deny，写操作未获授权，已拒绝执行。",
@@ -324,12 +337,12 @@ async def act_node(state: AgentSubState) -> dict[str, Any]:
                 )
             else:
                 # inline：落 pending approval + 返回确认卡片，本轮不执行该写操作
-                confirmation = await _build_confirmation(skill, context, call, writer)
+                confirmation = await _build_tool_confirmation(tool, context, call, writer)
         else:
-            executable.append((call, skill))
+            executable.append((call, tool))
 
     if executable:
-        coros = [_execute_skill(call, skill, context, writer) for call, skill in executable]
+        coros = [_execute_tool(call, tool, context, writer) for call, tool in executable]
         results.extend(await asyncio.gather(*coros))
 
     # 保持结果顺序与调用顺序一致（gather 已保序，加上前置 error 结果后统一按 calls 排序）
@@ -363,7 +376,7 @@ async def act_node(state: AgentSubState) -> dict[str, Any]:
             {
                 "type": "agent_confirm_required",
                 "approval_id": confirmation["approval_id"],
-                "skill_name": confirmation["skill_name"],
+                "tool_name": confirmation["tool_name"],
                 "summary": confirmation["summary"],
             }
         )
@@ -376,46 +389,50 @@ def act_route(state: AgentSubState) -> str:
     return "reflect"
 
 
-async def _build_confirmation(skill: Any, context: SkillContext, call: dict[str, Any], writer) -> dict[str, Any]:
+async def _build_tool_confirmation(
+    tool: Any, context: ToolContext, call: dict[str, Any], writer
+) -> dict[str, Any]:
     args = dict(call.get("args") or {})
-    if hasattr(skill, "confirmation_summary"):
-        summary = skill.confirmation_summary(context, args)
+    if hasattr(tool, "confirmation_summary"):
+        summary = tool.confirmation_summary(context, args)
     else:
         summary = (
-            f"即将为您办理「{skill.name}」，参数：{json.dumps(args, ensure_ascii=False)}。"
+            f"即将为您办理「{tool.name}」，参数：{json.dumps(args, ensure_ascii=False)}。"
             "请确认是否办理？（回复「确认」继续，回复「取消」放弃）"
         )
-    # 复用现有 ApprovalRequest 结构（tool_name 字段承载 Skill 名）
+    # 复用现有 ApprovalRequest 结构（tool_name 字段承载待确认的原子工具名）
     request = ApprovalRequest(
         id=make_approval_request(command=summary, risk_reason="").id,
         command=summary,
-        risk_reason=f"高危业务写操作：{skill.name}",
-        tool_name=skill.name,
+        risk_reason=f"高危业务写操作：{tool.name}",
+        tool_name=tool.name,
     )
     await save_pending_approval(
         context.workspace,
         approval_id=request.id,
-        skill_name=skill.name,
+        tool_name=tool.name,
         args=args,
         summary=summary,
     )
     return {
         "approval_id": request.id,
-        "skill_name": skill.name,
+        "tool_name": tool.name,
         "args": args,
         "summary": summary,
     }
 
 
-async def _execute_skill(call: dict[str, Any], skill: Any, context: SkillContext, writer) -> dict[str, Any]:
-    name = skill.name
+async def _execute_tool(
+    call: dict[str, Any], tool: Any, context: ToolContext, writer
+) -> dict[str, Any]:
+    name = tool.name
     call_id = str(call.get("id") or "")
     args = dict(call.get("args") or {})
-    writer({"type": "skill_call", "name": name, "call_id": call_id, "args": args})
+    writer({"type": "tool_call", "name": name, "call_id": call_id, "args": args})
     try:
-        data = await skill.run(context, **args)
+        data = await tool.run(context, **args)
         result = {"call_id": call_id, "name": name, "ok": True, "data": data if isinstance(data, dict) else {"value": data}}
-    except SkillError as exc:
+    except ToolError as exc:
         result = {
             "call_id": call_id,
             "name": name,
@@ -431,11 +448,11 @@ async def _execute_skill(call: dict[str, Any], skill: Any, context: SkillContext
             "ok": False,
             "data": {},
             "error": f"{type(exc).__name__}: {exc}",
-            "error_code": "skill_exception",
+            "error_code": "tool_exception",
         }
     writer(
         {
-            "type": "skill_result",
+            "type": "tool_result",
             "name": name,
             "call_id": call_id,
             "ok": bool(result["ok"]),
@@ -444,6 +461,158 @@ async def _execute_skill(call: dict[str, Any], skill: Any, context: SkillContext
         }
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# 编排驱动：执行 intent_router 选中的编排型 Skill（确定性控制流，不消耗 think 调用）
+# ---------------------------------------------------------------------------
+
+
+async def skill_exec_node(state: AgentSubState) -> dict[str, Any]:
+    """执行编排型 Skill：按 Skill 内代码顺序调用原子工具，跳过 Agent 自主规划。
+
+    - 全步成功 → finalize（`orchestration="skill"`），由答复节点把 data 组织成话术；
+    - 任一步失败 → reflect（仅失败时触发校验，符合"不引入新长尾"的目标）；
+    - 命中需人工确认的写操作 → 落 pending approval + 确认卡片 → finalize。
+    """
+    writer = _get_writer()
+    registry = _get_skills(state)
+    name = _selected_skill(state)
+    slots = dict(state.get("skill_slots") or {})
+
+    skill = registry.try_get(name) if name else None
+    if skill is None:
+        # 编排技能缺失/被热卸载：回退 Agent 自主规划（保底可用）
+        writer({"type": "agent_skill_missing", "skill": name})
+        return {
+            "skill_exec_decision": "think",
+            "skill_name": "",
+            "skill_slots": {},
+            "orchestration": "agent",
+        }
+
+    context = SkillContext(
+        phone=str(state.get("phone") or DEFAULT_DEMO_PHONE),
+        workspace=str(state.get("workspace") or ""),
+        approval_mode=str(state.get("approval_mode") or "inline"),
+        tools=_get_tools(state),
+    )
+    writer({"type": "agent_skill_start", "skill": name, "slots": slots})
+
+    try:
+        result = await skill.run(context, **slots)
+    except ConfirmationRequired as exc:
+        confirmation = await _build_skill_confirmation(exc, context, writer)
+        writer(
+            {
+                "type": "agent_confirm_required",
+                "approval_id": confirmation["approval_id"],
+                "tool_name": confirmation["tool_name"],
+                "summary": confirmation["summary"],
+            }
+        )
+        return {
+            "orchestration": "skill",
+            "skill_result": {"skill": name, "ok": False, "steps": [], "data": {}},
+            "skill_steps": [],
+            "tool_calls": [],
+            "tool_results": [],
+            "confirmation_request": confirmation,
+            "skill_exec_decision": "finalize",
+        }
+    except ToolError as exc:
+        result = {
+            "skill": name,
+            "ok": False,
+            "steps": [],
+            "data": {},
+            "error": str(exc),
+            "error_code": exc.code,
+        }
+    except Exception as exc:  # noqa: BLE001 —— 编排内部异常同样交给反思决策
+        result = {
+            "skill": name,
+            "ok": False,
+            "steps": [],
+            "data": {},
+            "error": f"{type(exc).__name__}: {exc}",
+            "error_code": "skill_exception",
+        }
+
+    ok = bool(result.get("ok"))
+    steps = list(result.get("steps") or [])
+    call_id = f"sk-{name}"
+    tool_results = [
+        {
+            "call_id": call_id,
+            "name": name,
+            "ok": ok,
+            "data": dict(result.get("data") or {}) if ok else {},
+            "error": "" if ok else str(result.get("error") or ""),
+            "error_code": "" if ok else str(result.get("error_code") or "tool_error"),
+        }
+    ]
+    writer(
+        {
+            "type": "agent_skill",
+            "skill": name,
+            "ok": ok,
+            "steps": steps,
+            "error": "" if ok else str(result.get("error") or ""),
+        }
+    )
+    return {
+        "orchestration": "skill",
+        "skill_result": result,
+        "skill_steps": steps,
+        "tool_calls": [{"id": call_id, "name": name, "args": slots}],
+        "tool_results": tool_results,
+        "skill_exec_decision": "finalize" if ok else "reflect",
+    }
+
+
+def skill_exec_route(state: AgentSubState) -> str:
+    return str(state.get("skill_exec_decision") or "finalize")
+
+
+async def _build_skill_confirmation(
+    exc: ConfirmationRequired, context: SkillContext, writer
+) -> dict[str, Any]:
+    """把编排抛出的 ConfirmationRequired 落成跨轮确认单（复用原子工具确认链路）。"""
+    tools = context.tools if context.tools is not None else get_tool_registry()
+    tool = tools.try_get(exc.tool_name)
+    if tool is not None:
+        call = {
+            "id": f"call-{uuid4().hex[:8]}",
+            "name": exc.tool_name,
+            "args": dict(exc.tool_args),
+        }
+        return await _build_tool_confirmation(tool, _to_tool_context(context), call, writer)
+
+    # 原子工具已被热卸载：退化为直接用编排给出的摘要落单
+    summary = exc.summary or (
+        f"即将为您办理「{exc.tool_name}」，参数：{json.dumps(exc.tool_args, ensure_ascii=False)}。"
+        "请确认是否办理？（回复「确认」继续，回复「取消」放弃）"
+    )
+    request = ApprovalRequest(
+        id=make_approval_request(command=summary, risk_reason="").id,
+        command=summary,
+        risk_reason=f"高危业务写操作：{exc.tool_name}",
+        tool_name=exc.tool_name,
+    )
+    await save_pending_approval(
+        context.workspace,
+        approval_id=request.id,
+        tool_name=exc.tool_name,
+        args=dict(exc.tool_args),
+        summary=summary,
+    )
+    return {
+        "approval_id": request.id,
+        "tool_name": exc.tool_name,
+        "args": dict(exc.tool_args),
+        "summary": summary,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -644,12 +813,29 @@ def _respond_payload(state: AgentSubState, results: list[dict[str, Any]]) -> str
 # ---------------------------------------------------------------------------
 
 
-def _get_registry(state: AgentSubState) -> SkillRegistry:
-    # 测试可通过 state["_registry"] 注入替身；生产取进程单例
-    registry = state.get("_registry")  # type: ignore[typeddict-item]
+def _get_tools(state: AgentSubState) -> ToolRegistry:
+    # 测试可通过 state["_tools"] 注入替身；生产取进程单例
+    registry = state.get("_tools")
+    if isinstance(registry, ToolRegistry):
+        return registry
+    return get_tool_registry()
+
+
+def _get_skills(state: AgentSubState) -> SkillRegistry:
+    # 测试可通过 state["_skills"] 注入替身；生产取进程单例
+    registry = state.get("_skills")
     if isinstance(registry, SkillRegistry):
         return registry
-    return get_registry()
+    return get_skill_registry()
+
+
+def _to_tool_context(context: SkillContext) -> ToolContext:
+    """编排技能上下文 → 原子工具上下文（仅传递三个公共字段）。"""
+    return ToolContext(
+        phone=context.phone,
+        workspace=context.workspace,
+        approval_mode=context.approval_mode,
+    )
 
 
 def _normalize_checks(raw: Any) -> list[dict[str, Any]]:

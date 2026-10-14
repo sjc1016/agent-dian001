@@ -18,7 +18,7 @@ from congclaw.api.deps import resolve_workspace
 from congclaw.core.paths import legacy_workspace_prefixes
 from congclaw.core.session import alist_sessions
 from congclaw.db import SessionModel, session_scope
-from congclaw.skills.business_store import DEFAULT_DEMO_PHONE
+from congclaw.domain.business_store import DEFAULT_DEMO_PHONE
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
@@ -31,30 +31,36 @@ async def list_sessions(
 ) -> dict:
     """列出历史会话摘要（按 updated_at 倒序）。
 
-    ``workspace_prefix`` 可为相对路径（如 ``.congclaw/workspaces/user-13800138000``），
-    由 :func:`resolve_workspace` 解析为绝对路径后按前缀匹配，从而只返回该用户的会话。
+    ``phone`` 为主过滤键：按 ``session.phone`` 显式归属只返回当前用户的会话，
+    从而支持多用户隔离。默认演示用户额外纳入无归属（``phone=''``）的历史会话，
+    使多用户改造前的旧会话不丢失，这类会话在返回结果中带 ``legacy: true``。
 
-    ``phone`` 用于识别默认演示用户：多用户改造前创建的会话没有 ``user-<phone>``
-    归属目录，统一划归默认用户，使其历史记录不因引入用户维度而丢失。
-    这类会话在返回结果中带 ``legacy: true`` 标记。
+    未传 ``phone`` 时退回 ``workspace_prefix`` 前缀过滤（``user-<phone>/`` 目录）。
     """
-    own_prefix: str | None = None
-    if workspace_prefix:
-        resolved = resolve_workspace(workspace_prefix)
-        # 追加路径分隔符，避免 user-138 / user-1380 这类前缀误匹配
-        own_prefix = str(resolved) + os.sep
+    phones: list[str] | None = None
+    if phone:
+        phones = [phone]
+        if phone == DEFAULT_DEMO_PHONE:
+            phones.append("")
 
+    own_prefix: str | None = None
     extra_prefixes: list[str] = []
-    if str(phone or "") == DEFAULT_DEMO_PHONE:
-        # 遗留工作区名本身就是 ``workspace-<时间戳>``，故这里不补分隔符
-        extra_prefixes = legacy_workspace_prefixes()
+    if not phones:
+        if workspace_prefix:
+            own_prefix = str(resolve_workspace(workspace_prefix)) + os.sep
+        if str(phone or "") == DEFAULT_DEMO_PHONE:
+            # 遗留工作区名本身就是 ``workspace-<时间戳>``，故这里不补分隔符
+            extra_prefixes = legacy_workspace_prefixes()
 
     items = await alist_sessions(
-        limit=limit, workspace_prefix=own_prefix, extra_prefixes=extra_prefixes
+        limit=limit,
+        workspace_prefix=own_prefix,
+        extra_prefixes=extra_prefixes,
+        phones=phones,
     )
-    if own_prefix:
-        for item in items:
-            item["legacy"] = not str(item.get("workspace", "")).startswith(own_prefix)
+    for item in items:
+        # 无归属（phone 为空）的会话属于多用户改造前的历史资产
+        item["legacy"] = not str(item.get("phone") or "")
     return {"total": len(items), "sessions": items}
 
 
@@ -77,6 +83,7 @@ async def get_session(session_id: str) -> dict:
     return {
         "session_id": row.session_id,
         "workspace": row.workspace,
+        "phone": row.phone or "",
         "turn_index": int(row.turn_index or 0),
         "last_route": row.last_route or "",
         "last_task": row.last_task or "",

@@ -7,7 +7,7 @@
 - input: 用户输入
 - expected_category: 期望意图类别（rag_query / agent_service / clarify / irrelevant）
 - expected_route: 期望路由节点（rag_answer / agent_loop / clarify / fallback）
-- expected_tools: 期望调用的 Skill 名称列表（可为空）
+- expected_tools: 期望调用的原子工具名称列表（可为空）
 - expected_fallback: 是否期望触发兜底（irrelevant / clarify_exceeded / unknown_streak / none）
 - max_clarify: 期望最大追问轮数（仅 clarify 类样本）
 - notes: 标注备注

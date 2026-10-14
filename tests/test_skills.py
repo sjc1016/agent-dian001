@@ -1,220 +1,214 @@
-"""阶段 4 验收：六个电信业务 Skill 的执行链路与参数校验。
+"""编排技能验收：四个确定性编排（余额/套餐咨询/套餐变更/故障报修）。
 
-全部使用 tmp_path 下的独立 SQLite 库（business_store 走 aiosqlite 短连接，
-DB_PATH 环境变量即时生效），不依赖真实 BOSS/CRM 与 LLM。
+编排技能（Skill）不进 LLM 的工具表，由主图 ``intent_router`` 依据 ``intent_hint``
+挑选后用代码顺序调用原子工具；原子工具本身另见 ``tests/test_tools.py``。
+
+业务数据全部走 tmp_path 下的独立 SQLite 库（conftest 全局隔离 DB_PATH），
+不依赖真实 BOSS/CRM 与 LLM。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from congclaw.skills.base import SkillContext, SkillError
-from congclaw.skills.catalog.change_package import SKILL as change_package_skill
-from congclaw.skills.catalog.list_packages import SKILL as list_packages_skill
-from congclaw.skills.catalog.query_balance import SKILL as query_balance_skill
-from congclaw.skills.catalog.query_fault_status import SKILL as query_fault_status_skill
-from congclaw.skills.catalog.report_fault import SKILL as report_fault_skill
-
-
-@pytest.fixture(autouse=True)
-def _isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "skills-test.db"))
+from congclaw.skills.base import SkillContext
+from congclaw.skills.catalog.balance_query import SKILL as balance_query_skill
+from congclaw.skills.catalog.fault_repair import SKILL as fault_repair_skill
+from congclaw.skills.catalog.fault_repair import normalize_fault_type
+from congclaw.skills.catalog.package_change import SKILL as package_change_skill
+from congclaw.skills.catalog.package_query import SKILL as package_query_skill
+from congclaw.skills.catalog.package_query import normalize_scope
+from congclaw.tools.base import ConfirmationRequired, ToolError
+from congclaw.tools.registry import BUILTIN_CATALOG_DIR, ToolRegistry
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def _ctx() -> SkillContext:
-    return SkillContext(phone="13800138000", workspace="ws-test", approval_mode="inline")
+def _ctx(tmp_path: Path, *, approval_mode: str = "inline") -> SkillContext:
+    """编排上下文：注入只含内置目录的工具注册中心（不启监听线程）。"""
+    return SkillContext(
+        phone="13800138000",
+        workspace="ws-test",
+        approval_mode=approval_mode,
+        tools=ToolRegistry(builtin_dir=BUILTIN_CATALOG_DIR, extra_dir=tmp_path / "ext", watch=False),
+    )
 
 
 # ---------------------------------------------------------------------------
-# P4-2：余额查询（验收门①的业务底座）
+# balance_query：单步编排（不消耗 think，纯粹把「选工具」收回代码）
 # ---------------------------------------------------------------------------
 
 
-def test_query_balance_returns_seed_account() -> None:
-    result = _run(query_balance_skill.run(_ctx()))
+def test_balance_query_runs_single_tool(tmp_path: Path) -> None:
+    result = _run(balance_query_skill.run(_ctx(tmp_path)))
 
-    assert result["query"] == "balance"
-    assert result["phone"] == "13800138000"
-    assert result["owner_name"] == "张伟"
-    assert result["balance"] == 86.50
-    assert result["real_time_fee"] == 113.50
-    assert result["bill_cycle"] == "2026-09"
-
-
-def test_query_balance_explicit_phone_overrides_context() -> None:
-    result = _run(query_balance_skill.run(_ctx(), phone=" 13800138000 "))
-
-    assert result["phone"] == "13800138000"
+    assert result["skill"] == "balance_query"
+    assert result["ok"] is True
+    assert [step["name"] for step in result["steps"]] == ["query_balance"]
+    assert all(step["ok"] for step in result["steps"])
+    assert result["data"]["account"]["balance"] == 86.50
+    assert result["data"]["account"]["owner_name"] == "张伟"
 
 
-def test_query_balance_unknown_account_raises_skill_error() -> None:
-    with pytest.raises(SkillError) as excinfo:
-        _run(query_balance_skill.run(_ctx(), phone="13900000000"))
+def test_balance_query_failure_keeps_tool_error_code(tmp_path: Path) -> None:
+    result = _run(balance_query_skill.run(_ctx(tmp_path), phone="13900000000"))
 
-    assert excinfo.value.code == "account_not_found"
+    assert result["ok"] is False
+    assert result["error_code"] == "account_not_found"
+    assert result["steps"][0]["ok"] is False
+    assert result["data"] == {}
 
 
 # ---------------------------------------------------------------------------
-# P4-5 + P4-6：宽带报修建单 + 工单状态查询（验收门②）
+# fault_repair：建单 → 按工单号复核（两步确定性顺序）
 # ---------------------------------------------------------------------------
 
 
-def test_report_fault_then_query_status() -> None:
-    created = _run(
-        report_fault_skill.run(
-            _ctx(),
-            fault_type="宽带故障",
-            description="昨晚开始光猫亮红灯，全屋断网",
+def test_fault_repair_creates_and_verifies_ticket(tmp_path: Path) -> None:
+    result = _run(
+        fault_repair_skill.run(
+            _ctx(tmp_path),
+            fault_type="",
+            description="从昨晚开始光猫亮红灯，全屋断网",
             address="杭州市西湖区文三路100号",
         )
     )
 
-    assert created["action"] == "report_fault"
-    assert created["ticket_id"].startswith("FT")
-    assert created["status"] == "已受理"
-    assert created["owner_name"] == "张伟"
-    assert created["contact"] == "13800138000"
-
-    ticket_id = created["ticket_id"]
-    by_id = _run(query_fault_status_skill.run(_ctx(), ticket_id=ticket_id))
-    assert by_id["lookup"] == "by_ticket_id"
-    assert by_id["ticket"]["ticket_id"] == ticket_id
-    assert by_id["ticket"]["fault_type"] == "宽带故障"
-
-    by_phone = _run(query_fault_status_skill.run(_ctx()))
-    assert by_phone["lookup"] == "by_phone"
-    assert by_phone["count"] >= 2  # 种子历史单 + 新建单
-    assert by_phone["tickets"][0]["ticket_id"] == ticket_id  # 最新单排首位
+    assert result["ok"] is True
+    assert [step["name"] for step in result["steps"]] == ["report_fault", "query_fault_status"]
+    assert result["data"]["fault_type"] == "宽带故障"  # 模型未给枚举值时按描述归一
+    assert result["data"]["ticket"]["ticket_id"].startswith("FT")
+    assert result["data"]["verified"] is True
 
 
-def test_report_fault_rejects_unknown_fault_type() -> None:
-    with pytest.raises(SkillError) as excinfo:
-        _run(
-            report_fault_skill.run(
-                _ctx(), fault_type="卫星故障", description="看不了电视"
-            )
-        )
-
-    assert excinfo.value.code == "invalid_enum"
-
-
-def test_report_fault_requires_description() -> None:
-    with pytest.raises(SkillError):
-        _run(report_fault_skill.run(_ctx(), fault_type="宽带故障"))
-
-
-def test_query_fault_status_unknown_ticket_raises() -> None:
-    with pytest.raises(SkillError) as excinfo:
-        _run(query_fault_status_skill.run(_ctx(), ticket_id="FT404404404"))
-
-    assert excinfo.value.code == "ticket_not_found"
+@pytest.mark.parametrize(
+    ("raw", "description", "expected"),
+    [
+        ("宽带故障", "", "宽带故障"),
+        ("", "光猫亮红灯上不了网", "宽带故障"),
+        ("", "机顶盒看不了电视", "IPTV故障"),
+        ("", "打电话拨不出去", "通话故障"),
+        ("", "手机没信号", "手机网络故障"),
+        ("", "说不清楚的怪现象", "其他"),
+    ],
+)
+def test_normalize_fault_type(raw: str, description: str, expected: str) -> None:
+    assert normalize_fault_type(raw, description) == expected
 
 
 # ---------------------------------------------------------------------------
-# P4-7：套餐变更（验收门③的业务底座，次月生效）
+# package_query：按 scope 条件分支（当前套餐 / 可办理套餐目录）
 # ---------------------------------------------------------------------------
 
 
-def test_change_package_success_same_package_and_not_found() -> None:
-    # 1) 成功变更：P129 -> P199
-    result = _run(change_package_skill.run(_ctx(), target_package="P199"))
+def test_package_query_defaults_to_current_package(tmp_path: Path) -> None:
+    result = _run(package_query_skill.run(_ctx(tmp_path), scope="当前套餐及流量余量"))
 
-    assert result["action"] == "change_package"
-    assert result["status"] == "办理成功"
-    assert result["old_package_id"] == "P129"
-    assert result["new_package_id"] == "P199"
-    assert result["new_package_name"] == "5G畅享199元档"
-    expected_effective = _next_month_first_day()
-    assert result["effective_date"] == expected_effective
-
-    # 2) 重复变更到同档：same_package（致命业务错误，反思节点不重试）
-    with pytest.raises(SkillError) as excinfo:
-        _run(change_package_skill.run(_ctx(), target_package="199"))
-    assert excinfo.value.code == "same_package"
-
-    # 3) 目标套餐不存在
-    with pytest.raises(SkillError) as excinfo:
-        _run(change_package_skill.run(_ctx(), target_package="P999"))
-    assert excinfo.value.code == "package_not_found"
+    assert result["ok"] is True
+    assert [step["name"] for step in result["steps"]] == ["query_package"]
+    assert result["data"]["scope"] == "current"
+    assert result["data"]["package"]["query"] == "user_package"
 
 
-def _next_month_first_day() -> str:
-    now = datetime.now()
-    year = now.year + (1 if now.month == 12 else 0)
-    month = 1 if now.month == 12 else now.month + 1
-    return f"{year:04d}-{month:02d}-01"
+def test_package_query_catalog_scope_lists_packages(tmp_path: Path) -> None:
+    result = _run(package_query_skill.run(_ctx(tmp_path), scope="catalog", keyword="199"))
 
-
-def test_change_package_fuzzy_name_resolves_unique_package() -> None:
-    result = _run(change_package_skill.run(_ctx(), target_package="全屋WiFi"))
-
-    assert result["new_package_id"] == "BB169"
-
-
-# ---------------------------------------------------------------------------
-# P4-3：套餐目录
-# ---------------------------------------------------------------------------
-
-
-def test_list_packages_keyword_filter() -> None:
-    result = _run(list_packages_skill.run(_ctx(), keyword="199"))
-
-    names = [item["name"] for item in result["packages"]]
+    assert result["ok"] is True
+    assert [step["name"] for step in result["steps"]] == ["list_packages"]
+    assert result["data"]["scope"] == "catalog"
+    names = [item["name"] for item in result["data"]["catalog"]["packages"]]
     assert "5G畅享199元档" in names
-    assert all(item["active"] for item in result["packages"])
+
+
+@pytest.mark.parametrize(
+    ("raw", "keyword", "expected"),
+    [
+        ("当前套餐及流量余量", "", "current"),
+        ("", "", "current"),
+        ("我不确定", "", "current"),
+        ("catalog", "", "catalog"),
+        ("你们有哪些套餐可以办理", "", "catalog"),
+        ("", "199", "current"),
+    ],
+)
+def test_normalize_scope(raw: str, keyword: str, expected: str) -> None:
+    assert normalize_scope(raw, keyword) == expected
 
 
 # ---------------------------------------------------------------------------
-# Skill 基类：元信息 / OpenAI tool schema / 参数校验
+# package_change：查当前套餐 → 提交变更（高危写操作，命中即请人工确认）
 # ---------------------------------------------------------------------------
 
 
-def test_change_package_openai_tool_schema() -> None:
-    tool = change_package_skill.to_openai_tool()
+def test_package_change_raises_confirmation_in_inline_mode(tmp_path: Path) -> None:
+    with pytest.raises(ConfirmationRequired) as excinfo:
+        _run(package_change_skill.run(_ctx(tmp_path), target_package="P199"))
 
-    assert tool["type"] == "function"
-    function = tool["function"]
-    assert function["name"] == "change_package"
-    assert "target_package" in function["parameters"]["required"]
-    assert function["parameters"]["properties"]["target_package"]["type"] == "string"
+    # 确认单落的是原子工具名与入参，执行节点据此在同一轮给出确认卡片
+    assert excinfo.value.tool_name == "change_package"
+    assert excinfo.value.tool_args == {"target_package": "P199"}
+    assert "请确认" in excinfo.value.summary
 
 
-def test_report_fault_metadata_exposes_enum_and_access() -> None:
-    metadata = report_fault_skill.metadata()
+def test_package_change_executes_under_auto_mode(tmp_path: Path) -> None:
+    result = _run(package_change_skill.run(_ctx(tmp_path, approval_mode="auto"), target_package="P199"))
 
+    assert result["ok"] is True
+    assert [step["name"] for step in result["steps"]] == ["query_package", "change_package"]
+    assert result["data"]["change"]["new_package_id"] == "P199"
+    assert result["data"]["current"]["query"] == "user_package"
+
+
+def test_package_change_rejected_under_deny_mode(tmp_path: Path) -> None:
+    with pytest.raises(ToolError) as excinfo:
+        _run(package_change_skill.run(_ctx(tmp_path, approval_mode="deny"), target_package="P199"))
+
+    assert excinfo.value.code == "approval_denied"
+
+
+def test_package_change_requires_target_package(tmp_path: Path) -> None:
+    with pytest.raises(ToolError):
+        _run(package_change_skill.run(_ctx(tmp_path), target_package="  "))
+
+
+# ---------------------------------------------------------------------------
+# Skill 基类：元信息 / 参数校验
+# ---------------------------------------------------------------------------
+
+
+def test_skill_metadata_exposes_intent_hint_and_parameters() -> None:
+    metadata = package_change_skill.metadata()
+
+    assert metadata["name"] == "package_change"
     assert metadata["access"] == "write"
-    assert metadata["requires_confirmation"] is False
-    fault_param = next(p for p in metadata["parameters"] if p["name"] == "fault_type")
-    assert "宽带故障" in fault_param["enum"]
+    assert metadata["intent_hint"]  # intent_router 挑选候选即读这个字段
+    assert "requires_confirmation" not in metadata  # 确认策略由原子工具的声明决定
+    target = next(p for p in metadata["parameters"] if p["name"] == "target_package")
+    assert target["required"] is True
 
 
-def test_change_package_requires_confirmation_flag() -> None:
-    assert change_package_skill.access == "write"
-    assert change_package_skill.requires_confirmation is True
+def test_skill_validate_arguments_rejects_unknown_argument(tmp_path: Path) -> None:
+    with pytest.raises(ToolError):
+        balance_query_skill.validate_arguments({"phone": "13800138000", "x": 1}, _ctx(tmp_path))
 
 
-def test_validate_arguments_rejects_unknown_argument() -> None:
-    with pytest.raises(SkillError):
-        query_balance_skill.validate_arguments(
-            {"phone": "13800138000", "unexpected": "x"}, _ctx()
-        )
+def test_skill_validate_arguments_strips_and_fills_defaults(tmp_path: Path) -> None:
+    cleaned = package_query_skill.validate_arguments({"phone": " 13800138000 "}, _ctx(tmp_path))
+
+    assert cleaned == {"phone": "13800138000", "scope": "current"}
 
 
-def test_validate_arguments_fills_defaults_and_strips() -> None:
-    cleaned = query_balance_skill.validate_arguments({"phone": "  13800138000  "}, _ctx())
+def test_skill_raises_when_dependency_unregistered(tmp_path: Path) -> None:
+    """依赖的原子工具被热卸载：编排以 unknown_tool 失败，而不是静默降级。"""
+    context = _ctx(tmp_path)
+    context.tools.unregister("query_balance")
 
-    assert cleaned == {"phone": "13800138000"}
+    result = _run(balance_query_skill.run(context))
 
-
-def test_validate_arguments_empty_optional_skipped() -> None:
-    cleaned = query_fault_status_skill.validate_arguments({}, _ctx())
-
-    assert cleaned == {}
+    assert result["ok"] is False
+    assert result["error_code"] == "unknown_tool"

@@ -9,7 +9,7 @@ const FAQ_GATE_REASONS = {
   fallback_turn: '兜底回复回合',
   pending_confirmation: '等待人工确认',
   no_evidence: '无检索证据',
-  no_tool_result: '无成功的技能结果',
+  no_tool_result: '无成功的工具结果',
   question_too_short: '问句过短',
   privacy_risk: '含个人隐私信息',
 }
@@ -88,28 +88,54 @@ function summarizeCustomEvent(event) {
   if (eventType === 'plan_snapshot' || eventType === 'todo_update') {
     return summarizePlan(event, eventType === 'plan_snapshot' ? 'Plan Snapshot' : 'Todo Updated')
   }
+  // 原子工具调用/返回：Agent 子图为主路径，遗留 planner 复用同名事件（带 node 字段）
   if (eventType === 'tool_call') {
     const name = event.name || 'tool'
-    const node = event.node || 'agent'
-    return { title: `${node} · ${name}`, body: shorten(event.args || {}, 500), category: 'tool_call', style: 'magenta' }
+    return {
+      title: event.node ? `${event.node} · ${name}` : `工具调用 · ${name}`,
+      body: shorten(event.args || {}, 500),
+      category: 'tool_call',
+      style: 'magenta',
+    }
   }
   if (eventType === 'tool_result') {
     const name = event.name || 'tool'
-    const node = event.node || 'agent'
-    const result = event.result
-    const ok = result && typeof result === 'object' ? result.ok : null
-    return { title: `${node} · ${name} result`, body: formatToolResult(result), category: 'tool_result', style: ok === false ? 'red' : 'green' }
+    const nested = event.result
+    const isNested = nested && typeof nested === 'object'
+    const payload = isNested ? nested : event
+    return {
+      title: event.node ? `${event.node} · ${name} result` : `工具返回 · ${name}`,
+      body: isNested ? formatToolResult(nested) : formatAgentToolResult(event),
+      category: 'tool_result',
+      style: payload.ok === false ? 'red' : 'green',
+    }
   }
-  // agent_loop 主路径的 Skill 调用事件（与遗留 planner 的 tool_call / tool_result 并存）。
-  // 二者语义相同（都是能力被调用），因此复用同一 category，便于统计与配色统一。
-  if (eventType === 'skill_call') {
-    const name = event.name || 'skill'
-    return { title: `技能调用 · ${name}`, body: shorten(event.args || {}, 500), category: 'tool_call', style: 'magenta' }
+  // 编排技能：由 intent_router 选定后按代码控制流执行（控制流不交给模型自由发挥）
+  if (eventType === 'agent_skill_start') {
+    return {
+      title: `编排执行 · ${event.skill || ''}`,
+      body: `skill: ${event.skill || ''}\nslots: ${shorten(event.slots || {}, 400)}`,
+      category: 'tool_call',
+      style: 'cyan',
+    }
   }
-  if (eventType === 'skill_result') {
-    const name = event.name || 'skill'
-    const ok = event.ok !== false
-    return { title: `技能返回 · ${name}`, body: formatSkillResult(event), category: 'tool_result', style: ok ? 'green' : 'red' }
+  if (eventType === 'agent_skill') {
+    const steps = Array.isArray(event.steps) ? event.steps : []
+    const stepText = steps.map((step) => `${step.ok ? 'PASS' : 'FAIL'} ${step.name}${step.error ? ` - ${step.error}` : ''}`).join('\n')
+    return {
+      title: `编排完成 · ${event.skill || ''}`,
+      body: `skill: ${event.skill || ''}\nok: ${event.ok !== false}\nsteps:\n${stepText}${event.error ? `\nerror: ${event.error}` : ''}`,
+      category: 'tool_result',
+      style: event.ok !== false ? 'green' : 'red',
+    }
+  }
+  if (eventType === 'agent_skill_missing') {
+    return {
+      title: `编排技能缺失 · ${event.skill || ''}`,
+      body: `skill: ${event.skill || ''}\n已回退 Agent 自主规划`,
+      category: 'event',
+      style: 'yellow',
+    }
   }
   if (eventType === 'handoff') {
     return {
@@ -318,11 +344,11 @@ function formatToolResult(result) {
 }
 
 /**
- * 格式化 Skill 返回事件。
- * 注意：skill_result 的成败标记在**顶层** `ok` 字段（见 congclaw/agent/nodes.py），
- * 与 tool_result 把结果包在 `result` 对象里不同，这里显式用 `ok: false` 便于统一判定失败。
+ * 格式化 Agent 子图发来的 tool_result 事件。
+ * 注意：Agent 子图的成败标记在**顶层** `ok` 字段（见 congclaw/agent/nodes.py），
+ * 而遗留 planner 把结果包在 `result` 对象里（走 formatToolResult），两者形状不同。
  */
-function formatSkillResult(event) {
+function formatAgentToolResult(event) {
   const lines = [`ok: ${event.ok !== false}`]
   if (event.call_id) lines.push(`call_id: ${event.call_id}`)
   if (event.error) lines.push(`error: ${event.error}`)
@@ -424,7 +450,7 @@ export function shouldCollapse(summary) {
 export function eventCategory(summary) {
   if (summary.category === 'final' || summary.category === 'trace') return 'success'
   if (summary.category === 'verifier' || summary.category === 'tool_result') {
-    // formatToolResult / formatSkillResult 均以「ok: false」标记调用失败
+    // formatToolResult / formatAgentToolResult 均以「ok: false」标记调用失败
     if (summary.body && (summary.body.includes('FAIL') || summary.body.includes('ok: false'))) return 'error'
   }
   if (summary.category === 'faq') {

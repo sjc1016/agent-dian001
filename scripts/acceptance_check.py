@@ -5,8 +5,9 @@
   1. 四类业务（余额、套餐、故障、办理）端到端走通，意图分流正确
   2. 模糊意图追问 <=5 轮后兜底；无关请求直接兜底
   3. RAG 答案附来源片段，父子分片回溯生效
-  4. Agent 链路有完整"思考→调用工具→反思校验"轨迹
-  5. Skill 热插拔：运行中增删工具，不重启即生效
+  4. Agent 链路轨迹完整：编排技能闭环（skill_start→tool_call→tool_result→skill）
+     与自主规划"思考→调用工具→反思校验"两条路径
+  5. 能力热插拔：运行中增删原子工具 / 编排技能，不重启即生效
   6. 指代消解：多轮指代问题被正确重写并路由
   7. 评测流水线一键运行，输出含规则校验 + LLM-Judge 的报告
 
@@ -19,8 +20,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -85,12 +88,12 @@ def check_four_businesses() -> None:
         # 故障报修缺上门地址时 Agent 会先追问，补地址后建单（多轮端到端）
         ("故障", ["我家宽带从昨天开始断网，帮我报修",
                   "地址是杭州市西湖区文三路100号，光猫红灯一直闪"], "agent_service", "report_fault"),
-        # 写操作：思考节点决定调 change_package 后先推人工确认卡片（skill 执行前短路）
+        # 写操作：思考节点决定调 change_package 后先推人工确认卡片（工具执行前短路）
         ("办理", ["我要把套餐变更成5G畅享199元档"], "agent_service", "change_package"),
     ]
     all_ok = True
     details = []
-    for name, messages, expect_intent, expect_skill in cases:
+    for name, messages, expect_intent, expect_tool in cases:
         ws = f"acc-biz-{uuid.uuid4().hex[:8]}"
         events: list[dict] = []
         try:
@@ -106,18 +109,18 @@ def check_four_businesses() -> None:
         intents = find(events, "intent_decision")
         intent = intents[0].get("category", "?") if intents else "?"
         intent_ok = intent == expect_intent
-        skill_ok = True
-        skills: list[str] = []
-        if expect_skill:
-            skills = [e.get("name", "") for e in find(events, "skill_call")]
-            # 写操作可能在确认卡片阶段短路（无 skill_call，有 confirm 事件也算分流+链路正确）
-            confirm_names = [e.get("skill_name", "") for e in find(events, "agent_confirm_required")]
-            skill_ok = (expect_skill in skills) or (expect_skill in confirm_names)
+        tool_ok = True
+        tools: list[str] = []
+        if expect_tool:
+            tools = [e.get("name", "") for e in find(events, "tool_call")]
+            # 写操作可能在确认卡片阶段短路（无 tool_call，有 confirm 事件也算分流+链路正确）
+            confirm_names = [e.get("tool_name", "") for e in find(events, "agent_confirm_required")]
+            tool_ok = (expect_tool in tools) or (expect_tool in confirm_names)
         answered = any(t in types for t in ("rag_answer", "agent_answer",
                                             "agent_confirm_required", "fallback_reply"))
-        ok = intent_ok and skill_ok and answered
+        ok = intent_ok and tool_ok and answered
         all_ok = all_ok and ok
-        extra = f" skills={skills}" if skills else ""
+        extra = f" tools={tools}" if tools else ""
         details.append(f"{name}: intent={intent}(期望{expect_intent}){extra} answered={answered}")
         time.sleep(0.5)
     record("1. 四类业务端到端 + 意图分流", all_ok, "\n".join(details))
@@ -196,63 +199,108 @@ def check_rag() -> None:
            f"答案预览: {answer_text[:100]}")
 
 
-# ---------------------------------------------------------------- 4. Agent 思考→调用→反思
+# ---------------------------------------------------------------- 4. Agent 轨迹
 def check_agent_trace() -> None:
-    ws = f"acc-agent-{uuid.uuid4().hex[:8]}"
+    """Agent 子图两条执行路径都要留下完整轨迹：
+
+    - 编排技能路径（意图路由锁定技能、槽位齐全）：skill_start → tool_call → tool_result → skill 闭环；
+    - 自主规划路径（无匹配编排技能）：thinking → tool_call → tool_result → reflect 校验。
+    """
+    # 4a 编排技能路径：余额查询被 balance_query 确定性接管
+    skill_events: list[dict] | None = None
     try:
-        events = chat("帮我查一下话费余额", ws)
+        skill_events = chat("帮我查一下话费余额", f"acc-agent-{uuid.uuid4().hex[:8]}")
     except Exception as exc:  # noqa: BLE001
-        record("4. Agent 思考→调用工具→反思校验轨迹", False, f"请求异常: {exc}")
+        record("4a. Agent 编排技能链路（锁定技能→调工具→技能闭环）", False, f"请求异常: {exc}")
+    if skill_events is not None:
+        types = types_of(skill_events)
+        started = "agent_skill_start" in types
+        call = "tool_call" in types
+        result = "tool_result" in types
+        closed = "agent_skill" in types
+        answer = "agent_answer" in types
+        skills = [e.get("skill", "") for e in find(skill_events, "agent_skill")]
+        ok = started and call and result and closed and answer
+        record("4a. Agent 编排技能链路（锁定技能→调工具→技能闭环）", ok,
+               f"skill_start={started} tool_call={call} tool_result={result} "
+               f"skill_done={closed} answer={answer} skill={skills}\n"
+               f"事件: {' -> '.join(t for t in types if t.startswith('agent') or t in ('tool_call', 'tool_result'))}")
+
+    # 4b 自主规划路径：工单进度没有对应编排技能，回退 think → act → reflect
+    try:
+        think_events = chat(
+            "帮我查一下我之前报修的工单现在处理到哪一步了", f"acc-think-{uuid.uuid4().hex[:8]}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        record("4b. Agent 自主规划链路（思考→调用工具→反思校验）", False, f"请求异常: {exc}")
         return
-    types = types_of(events)
+    types = types_of(think_events)
     think = "agent_thinking" in types
-    call = "skill_call" in types
-    result = "skill_result" in types
-    reflect_ev = find(events, "agent_reflect")
-    reflect = bool(reflect_ev)
+    call = "tool_call" in types
+    result = "tool_result" in types
+    reflect_ev = find(think_events, "agent_reflect")
     answer = "agent_answer" in types
-    reflect_decision = reflect_ev[-1].get("decision", "?") if reflect_ev else "?"
-    ok = think and call and result and reflect and answer
-    record("4. Agent 思考→调用工具→反思校验轨迹", ok,
-           f"think={think} skill_call={call} skill_result={result} reflect={reflect}(decision={reflect_decision}) answer={answer}\n"
-           f"事件: {' -> '.join(t for t in types if t.startswith(('agent', 'skill')))}")
+    decision = reflect_ev[-1].get("decision", "?") if reflect_ev else "?"
+    tools = [e.get("name", "") for e in find(think_events, "tool_call")]
+    ok = think and call and result and bool(reflect_ev) and answer
+    record("4b. Agent 自主规划链路（思考→调用工具→反思校验）", ok,
+           f"think={think} tool_call={call} tool_result={result} "
+           f"reflect={bool(reflect_ev)}(decision={decision}) answer={answer} tools={tools}\n"
+           f"事件: {' -> '.join(t for t in types if t.startswith('agent') or t in ('tool_call', 'tool_result'))}")
 
 
-# ---------------------------------------------------------------- 5. Skill 热插拔
+# ---------------------------------------------------------------- 5. 能力热插拔
 def check_hotplug() -> None:
-    def list_names() -> set[str]:
-        return {s["name"] for s in httpx.get(f"{BASE}/api/v1/skills", timeout=15).json().get("skills", [])}
+    """运行中增删两类能力：原子工具（/api/v1/tools）与编排技能（/api/v1/skills）。"""
+    suffix = uuid.uuid4().hex[:6]
 
-    skill_name = f"acc_hot_{uuid.uuid4().hex[:6]}"
+    def list_names(kind: str) -> set[str]:
+        payload = httpx.get(f"{BASE}/api/v1/{kind}", timeout=15).json()
+        return {item["name"] for item in payload.get(kind, [])}
+
+    tool_name = f"acc_hot_tool_{suffix}"
+    tool_code = (
+        "from congclaw.tools.base import Tool, ToolParameter\n\n"
+        "class AccHotTool(Tool):\n"
+        f"    name = \"{tool_name}\"\n"
+        "    description = \"验收热插拔测试 Tool：返回固定字符串\"\n"
+        "    parameters = []\n\n"
+        "    async def run(self, context, **kwargs):\n"
+        "        return {\"value\": \"hotplug-ok\"}\n\n"
+        "TOOL = AccHotTool()\n"
+    )
+    skill_name = f"acc_hot_skill_{suffix}"
     skill_code = (
         "from congclaw.skills.base import Skill, SkillContext\n\n"
-        "class AccHot(Skill):\n"
+        "class AccHotSkill(Skill):\n"
         f"    name = \"{skill_name}\"\n"
         "    description = \"验收热插拔测试 Skill：返回固定字符串\"\n"
+        "    intent_hint = \"验收脚本模拟的编排技能\"\n"
         "    access = \"read\"\n"
         "    parameters = []\n\n"
         "    async def run(self, context: SkillContext, **kwargs):\n"
-        "        return {\"value\": \"hotplug-ok\"}\n\n"
-        "SKILL = AccHot()\n"
+        "        return self._finished([], {\"value\": \"hotplug-ok\"})\n\n"
+        "SKILL = AccHotSkill()\n"
     )
     registered = unloaded = False
     detail = ""
     try:
-        before = list_names()
-        resp = httpx.post(f"{BASE}/api/v1/skills",
-                          json={"name": skill_name, "content": skill_code}, timeout=20)
-        if resp.status_code != 201:
-            detail = f"注册返回 {resp.status_code}: {resp.text[:200]}"
-        else:
-            registered = skill_name in list_names()
-        if registered:
-            d = httpx.delete(f"{BASE}/api/v1/skills/{skill_name}", timeout=15)
+        before = len(list_names("tools")) + len(list_names("skills"))
+        for kind, name, code in (("tools", tool_name, tool_code), ("skills", skill_name, skill_code)):
+            resp = httpx.post(f"{BASE}/api/v1/{kind}",
+                              json={"name": name, "content": code}, timeout=20)
+            if resp.status_code != 201:
+                detail += f"{kind} 注册返回 {resp.status_code}: {resp.text[:200]}; "
+        registered = tool_name in list_names("tools") and skill_name in list_names("skills")
+        for kind, name in (("tools", tool_name), ("skills", skill_name)):
+            httpx.delete(f"{BASE}/api/v1/{kind}/{name}", timeout=15)
             time.sleep(0.5)
-            unloaded = d.status_code == 200 and skill_name not in list_names()
-        detail = (detail + f" 注册={registered} 卸载={unloaded} 原 builtin+external 共{len(before)}个").strip()
+        unloaded = (tool_name not in list_names("tools")
+                    and skill_name not in list_names("skills"))
+        detail = (detail + f" 注册={registered} 卸载={unloaded} 原有工具+技能共{before}个").strip()
     except Exception as exc:  # noqa: BLE001
         detail = f"异常: {exc}"
-    record("5. Skill 热插拔（不重启注册+卸载）", registered and unloaded, detail)
+    record("5. 能力热插拔（原子工具 + 编排技能，不重启注册+卸载）", registered and unloaded, detail)
 
 
 # ---------------------------------------------------------------- 6. 指代消解
@@ -316,6 +364,21 @@ def check_eval() -> None:
 
 
 # ---------------------------------------------------------------- 中间产物清理
+def _rmtree(path: Path) -> None:
+    """删除工作区目录。
+
+    checkpoint 的 git objects 落盘为只读文件，直接 rmtree 会抛 WinError 5，
+    先清掉只读位再删。
+    """
+    for root, _dirs, files in os.walk(path):
+        for filename in files:
+            try:
+                os.chmod(Path(root) / filename, stat.S_IWRITE)
+            except OSError:
+                pass
+    shutil.rmtree(path)
+
+
 def acc_workspaces() -> set[str]:
     """项目根下由本脚本创建的验收工作区目录名（acc-*）。"""
     return {p.name for p in PROJECT_ROOT.glob("acc-*") if p.is_dir()}
@@ -336,7 +399,7 @@ def cleanup_workspaces(before: set[str], keep: bool = False) -> None:
     removed = 0
     for name in created:
         try:
-            shutil.rmtree(PROJECT_ROOT / name)
+            _rmtree(PROJECT_ROOT / name)
             removed += 1
         except OSError as exc:  # noqa: BLE001 —— 清理失败不影响验收结论
             print(f"清理工作区 {name} 失败: {exc}")

@@ -250,7 +250,7 @@ def _tool_summaries(traces: Any) -> list[dict[str, Any]]:
         return []
     summaries = []
     for event in traces:
-        if not isinstance(event, dict) or event.get("type") != "skill_result":
+        if not isinstance(event, dict) or event.get("type") != "tool_result":
             continue
         summaries.append(
             {

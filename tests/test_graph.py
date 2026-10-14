@@ -341,7 +341,7 @@ def test_rag_answer_node_drives_rag_subgraph(monkeypatch) -> None:
 def test_agent_loop_node_drives_agent_subgraph_with_direct_reply(monkeypatch, tmp_path: Path) -> None:
     """阶段 4：agent_loop 不再是占位话术，而是挂载并驱动 Agent 深度推理子图。"""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent-node-test.db"))
-    monkeypatch.setenv("SKILL_WATCH", "0")
+    monkeypatch.setenv("HOTLOAD_WATCH", "0")
 
     class FakeAgentModel:
         def bind_tools(self, tools):

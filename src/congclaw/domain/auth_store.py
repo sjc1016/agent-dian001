@@ -1,6 +1,6 @@
 """账号鉴权仓储：登录、注册与账号检索。
 
-沿用 :mod:`congclaw.skills.business_store` 的 aiosqlite 短连接风格：演示场景
+沿用 :mod:`congclaw.domain.business_store` 的 aiosqlite 短连接风格：演示场景
 读多写少，短连接天然规避「连接跨异步循环」问题。
 
 登录账号支持两种标识：
@@ -26,7 +26,7 @@ from congclaw.core.security import (
 )
 from congclaw.db.baseline import DEFAULT_PACKAGE_ID, provision_account_baseline
 from congclaw.db.engine import init_db, resolve_db_path
-from congclaw.skills.business_store import utc_now
+from congclaw.domain.business_store import utc_now
 
 # 手机号：11 位、1 开头、第二位 3-9
 PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")

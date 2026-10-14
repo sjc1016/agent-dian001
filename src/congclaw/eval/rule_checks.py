@@ -2,7 +2,7 @@
 
 四类断言：
 1. 分流正确性：实际意图类别/路由与期望一致
-2. 工具参数合法性：被调用 Skill 的必填参数齐全、枚举值合法
+2. 工具参数合法性：被调用原子工具的必填参数齐全、枚举值合法
 3. 兜底触发：无关/超限应兜底，业务类不应兜底
 4. 追问轮次：clarify 类样本追问 ≤ 5 轮
 """
@@ -84,7 +84,7 @@ def _check_tool_params(sample: EvalSample) -> RuleResult:
         args = call.get("args") or {}
         if not isinstance(args, dict):
             args = {}
-        errors.extend(_validate_skill_args(name, args))
+        errors.extend(_validate_tool_args(name, args))
 
     # 同时检查期望工具是否被调用
     missing = [t for t in sample.expected_tools if t not in sample.actual_tools]
@@ -98,31 +98,31 @@ def _check_tool_params(sample: EvalSample) -> RuleResult:
     )
 
 
-def _validate_skill_args(skill_name: str, args: dict[str, Any]) -> list[str]:
-    """根据 Skill 注册表的参数声明校验入参。"""
+def _validate_tool_args(tool_name: str, args: dict[str, Any]) -> list[str]:
+    """根据工具注册表的参数声明校验入参。"""
     errors: list[str] = []
     try:
-        from congclaw.skills.registry import get_registry
+        from congclaw.tools.registry import get_tool_registry
 
-        registry = get_registry()
-        skill = registry.try_get(skill_name)
+        registry = get_tool_registry()
+        tool = registry.try_get(tool_name)
     except Exception:
-        skill = None
+        tool = None
 
-    if skill is None:
-        # 未注册的 Skill（可能已热卸载）不做参数硬校验
+    if tool is None:
+        # 未注册的工具（可能已热卸载）不做参数硬校验
         return errors
 
-    declared = {p.name: p for p in skill.parameters}
+    declared = {p.name: p for p in tool.parameters}
     for pname, param in declared.items():
         value = args.get(pname, param.default)
         if value is None or (isinstance(value, str) and not value.strip()):
             if param.required:
-                errors.append(f"{skill_name}: missing required param '{pname}'")
+                errors.append(f"{tool_name}: missing required param '{pname}'")
             continue
         if param.enum is not None and value not in param.enum:
             errors.append(
-                f"{skill_name}: param '{pname}'={value!r} not in enum {param.enum}"
+                f"{tool_name}: param '{pname}'={value!r} not in enum {param.enum}"
             )
     return errors
 

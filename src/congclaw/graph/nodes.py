@@ -11,6 +11,11 @@ from langchain_core.tools import StructuredTool
 from langgraph.config import get_stream_writer
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
+from congclaw.domain.business_store import (
+    DEFAULT_DEMO_PHONE,
+    get_pending_approval,
+    update_pending_approval,
+)
 from congclaw.graph.memory import (
     assemble_layered_messages,
     build_customer_memory,
@@ -35,17 +40,14 @@ from congclaw.prompts.intent import (
     INTENT_ROUTER_PROMPT,
     UNKNOWN_CONFIDENCE_FLOOR,
     UNKNOWN_MAX_STREAK,
+    render_skill_menu,
 )
 from congclaw.prompts.memory import QUERY_REWRITE_PROMPT
 from congclaw.prompts.stage3 import PLANNER_PROMPT, VERIFIER_PROMPT
 from congclaw.prompts.stage4 import CONTEXT_COMPRESSION_PROMPT
 from congclaw.providers.openai_provider import create_model
 from congclaw.rag.workflow import build_rag_subgraph
-from congclaw.skills.business_store import (
-    DEFAULT_DEMO_PHONE,
-    get_pending_approval,
-    update_pending_approval,
-)
+from congclaw.skills.registry import SkillRegistry, get_skill_registry
 from congclaw.tools.todo_tool import persist_todos, write_todos
 
 
@@ -183,6 +185,9 @@ async def intent_router_node(state: CongGraphState) -> dict[str, Any]:
                 "unknown_count": 0,
                 "pending_approval": pending,
                 "approval_resolution": resolution,
+                # 审批恢复走子图既有的 act 分支，不需要再选编排技能（同时清掉上轮残留）
+                "skill_name": "",
+                "skill_slots": {},
             }
         # 用户说了新诉求：旧确认单作废，交由正常意图分类处理
         await _cancel_pending_approval(pending)
@@ -198,12 +203,14 @@ async def intent_router_node(state: CongGraphState) -> dict[str, Any]:
     reason = "router fallback: default to unknown"
     confidence = 0.0
     pending_slots: list[str] = []
+    parsed: dict[str, Any] = {}
     # 阶段 5：意图分类输入使用重写后的独立问句（指代已消解）；审批短路判定已用原文完成
     question = str(state.get("rewritten_task") or task_text or "")
+    registry = _skill_registry(state)
     try:
         response = await create_model().ainvoke(
             assemble_layered_messages(
-                INTENT_ROUTER_PROMPT,
+                INTENT_ROUTER_PROMPT + render_skill_menu(registry.list_metadata()),
                 state,
                 question=question,
                 node="intent_router",
@@ -225,6 +232,15 @@ async def intent_router_node(state: CongGraphState) -> dict[str, Any]:
             reason = f"{reason} (low confidence)".strip()
     except Exception as exc:
         reason = f"router error: {type(exc).__name__}: {exc}"
+
+    # 编排驱动：agent_service 且槽位齐全时锁定编排型 Skill，控制流交给代码；
+    # 槽位不全 / 未选中 / 选中的不是编排技能时留空，回退子图内既有的 Agent 自主规划。
+    skill_name, skill_slots = "", {}
+    if category == "agent_service":
+        skill_name, skill_slots, skill_missing = _parse_skill_choice(parsed, registry)
+        if skill_missing:
+            pending_slots = list(dict.fromkeys([*pending_slots, *skill_missing]))[:5]
+            skill_name, skill_slots = "", {}
 
     if category in ("clarify", "unknown") and not pending_slots:
         # 追问延续：上一轮识别出的待补槽位继续有效，避免追问失去靶点
@@ -251,6 +267,8 @@ async def intent_router_node(state: CongGraphState) -> dict[str, Any]:
         "original_input": task_text,
         "rewritten_input": question,
         "rewrite_changed": bool(state.get("rewrite_changed")),
+        "skill": skill_name,
+        "slots": skill_slots,
     }
     writer(event)
     return {
@@ -262,7 +280,50 @@ async def intent_router_node(state: CongGraphState) -> dict[str, Any]:
         "fallback_reason": fallback_reason,
         "clarify_count": clarify_count,
         "unknown_count": unknown_count,
+        "skill_name": skill_name,
+        "skill_slots": skill_slots,
     }
+
+
+def _skill_registry(state: CongGraphState) -> SkillRegistry:
+    """编排技能注册中心：测试可通过 state["_skills"] 注入替身，生产取进程单例。"""
+    registry = state.get("_skills")
+    if isinstance(registry, SkillRegistry):
+        return registry
+    return get_skill_registry()
+
+
+def _parse_skill_choice(
+    parsed: dict[str, Any], registry: SkillRegistry
+) -> tuple[str, dict[str, Any], list[str]]:
+    """把意图识别的 ``skill`` / ``slots`` 收敛成可执行的编排调用。
+
+    返回 ``(skill_name, slots, missing_required)``：skill 未注册
+    或必填槽位缺失（``missing_required`` 非空）时 skill_name 均为空字符串，
+    由调用方决定回退 Agent 或先追问。
+    """
+    raw_name = str(parsed.get("skill") or "").strip()
+    if not raw_name:
+        return "", {}, []
+    skill = registry.try_get(raw_name)
+    if skill is None:
+        return "", {}, []
+
+    declared = {param.name for param in skill.parameters}
+    raw_slots = parsed.get("slots")
+    slots: dict[str, Any] = {}
+    if isinstance(raw_slots, dict):
+        slots = {
+            str(key): value
+            for key, value in raw_slots.items()
+            if str(key) in declared and value is not None and str(value).strip() != ""
+        }
+    missing = [
+        param.name
+        for param in skill.parameters
+        if param.required and not slots.get(param.name)
+    ]
+    return skill.name, slots, missing
 
 
 def _route_for(category: str, clarify_count: int, unknown_count: int) -> tuple[str, str]:
@@ -407,7 +468,7 @@ async def rag_answer_node(state: CongGraphState) -> dict[str, Any]:
 async def agent_loop_node(state: CongGraphState) -> dict[str, Any]:
     """P4-12~P4-16：Agent 深度推理子图挂载点（替换阶段 2 占位）。
 
-    问句进、业务答复出：思考（bind_tools 六类 Skill）→ 多工具并行执行
+    问句进、业务答复出：思考（bind_tools 六类原子工具）→ 多工具并行执行
     → 反思校验（失败按 attempts 重试/兜底）→ 中文答复；写操作的人工确认
     卡片与跨轮"确认/取消"恢复全部在子图内完成，主图只透传事件与轨迹。
     """
@@ -433,6 +494,8 @@ async def agent_loop_node(state: CongGraphState) -> dict[str, Any]:
         "approval_mode": str(state.get("approval_mode") or "inline"),
         "pending_approval": pending,
         "approval_resolution": resolution or "unknown",
+        "skill_name": str(state.get("skill_name") or ""),
+        "skill_slots": dict(state.get("skill_slots") or {}),
         "attempts": 0,
         "max_attempts": int(state.get("max_attempts", 3) or 3),
     }
@@ -443,6 +506,7 @@ async def agent_loop_node(state: CongGraphState) -> dict[str, Any]:
             "original_query": task,
             "has_pending_approval": pending is not None,
             "approval_resolution": sub_input["approval_resolution"],
+            "skill": sub_input["skill_name"],
         }
     )
 
@@ -455,7 +519,7 @@ async def agent_loop_node(state: CongGraphState) -> dict[str, Any]:
         ):
             if mode == "custom":
                 writer(chunk)
-                if isinstance(chunk, dict) and chunk.get("type") in ("skill_call", "skill_result"):
+                if isinstance(chunk, dict) and chunk.get("type") in ("tool_call", "tool_result"):
                     tool_traces.append(chunk)
             elif isinstance(chunk, dict):
                 for node_name, update in chunk.items():
@@ -476,6 +540,11 @@ async def agent_loop_node(state: CongGraphState) -> dict[str, Any]:
 
     answer = str(result.get("answer") or "")
     metadata = dict(state.get("metadata") or {})
+    # 编排模式：skill=确定性编排驱动，agent=LLM 自主规划兜底（评测按此分组看长尾）
+    metadata["agent_orchestration"] = str(result.get("orchestration") or "agent")
+    skill_name = str((result.get("skill_result") or {}).get("skill") or "")
+    if skill_name:
+        metadata["agent_skill"] = skill_name
     if result.get("fallback_reason"):
         metadata["agent_fallback_reason"] = result["fallback_reason"]
     if result.get("verify_decision"):
@@ -485,7 +554,7 @@ async def agent_loop_node(state: CongGraphState) -> dict[str, Any]:
     if confirmation:
         metadata["pending_confirmation"] = {
             "approval_id": confirmation.get("approval_id", ""),
-            "skill_name": confirmation.get("skill_name", ""),
+            "tool_name": confirmation.get("tool_name", ""),
             "summary": confirmation.get("summary", ""),
         }
     writer(
@@ -495,6 +564,8 @@ async def agent_loop_node(state: CongGraphState) -> dict[str, Any]:
             "fallback_reason": str(result.get("fallback_reason") or ""),
             "confirmation_required": confirmation is not None,
             "tool_trace_count": len(tool_traces),
+            "orchestration": metadata["agent_orchestration"],
+            "skill": metadata.get("agent_skill", ""),
         }
     )
     return {
@@ -698,7 +769,7 @@ def verifier_node(state: CongGraphState) -> dict[str, Any]:
     )
 
     model = create_model()
-    # 业务 Skill 工具将在阶段 4 接入反思校验节点；阶段 0 暂不绑定任何工具。
+    # 业务工具将在阶段 4 接入反思校验节点；阶段 0 暂不绑定任何工具。
     verifier = model
     messages: list[Any] = [
         SystemMessage(content=VERIFIER_PROMPT),
@@ -708,7 +779,7 @@ def verifier_node(state: CongGraphState) -> dict[str, Any]:
     tool_events: list[dict[str, Any]] = []
 
     # 阶段 0：反思节点不绑定工具，直接要求模型返回校验 JSON；
-    # 阶段 4 会在这里恢复“调用业务 Skill → 校验结果”的工具循环。
+    # 阶段 4 会在这里恢复“调用业务工具 → 校验结果”的工具循环。
     response = verifier.invoke(messages)
     produced_messages.append(response)
 
@@ -912,7 +983,7 @@ def estimate_context_tokens(state: CongGraphState) -> int:
 
 
 def _build_planner_tools(state: CongGraphState, writer) -> list[StructuredTool]:
-    # searchAgent / codeAgent 已随领域瘦身删除；客服业务 Skill 将在阶段 4 接入。
+    # searchAgent / codeAgent 已随领域瘦身删除；客服业务工具将在阶段 4 接入。
     return [
         StructuredTool.from_function(
             name="TodoWriteTool",

@@ -87,7 +87,7 @@ def run_trace_checks(trace: SessionTrace) -> TraceCheckReport:
     if rag_events or trace.route == "rag_answer":
         assertions.extend(_rag_assertions(trace, rag_events))
 
-    agent_events = _events_of(trace, "agent_", "skill_")
+    agent_events = _agent_events(trace)
     if agent_events or trace.route == "agent_loop":
         assertions.extend(_agent_assertions(trace, agent_events))
 
@@ -96,6 +96,24 @@ def run_trace_checks(trace: SessionTrace) -> TraceCheckReport:
         applicable=bool(assertions),
         assertions=assertions,
     )
+
+
+def _agent_events(trace: SessionTrace) -> list[dict[str, Any]]:
+    """按落盘顺序取出 Agent 子图事件（agent_* 与子图内原子工具的 tool_call/tool_result）。
+
+    遗留 planner 的工具事件同样叫 ``tool_call``/``tool_result``，但带 ``node`` 字段，
+    按此排除，避免混入 Agent 链路断言。
+    """
+    events: list[dict[str, Any]] = []
+    for event in trace.events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type.startswith("agent_"):
+            events.append(event)
+        elif event_type in ("tool_call", "tool_result") and not event.get("node"):
+            events.append(event)
+    return events
 
 
 def _events_of(trace: SessionTrace, *prefixes: str) -> list[dict[str, Any]]:
@@ -329,18 +347,19 @@ def _check_agent_trigger(trace: SessionTrace, counts: Counter[str]) -> TraceAsse
 
 
 def _check_call_pairing(events: list[dict[str, Any]]) -> TraceAssertion:
-    """每次 skill_call 必须产出配对的 skill_result，且不得有孤儿结果。"""
-    calls = [event for event in events if event.get("type") == "skill_call"]
-    results = [event for event in events if event.get("type") == "skill_result"]
+    """每次 tool_call 必须产出配对的 tool_result，且不得有孤儿结果。"""
+    title = "tool_call ↔ tool_result 一一配对"
+    calls = [event for event in events if event.get("type") == "tool_call"]
+    results = [event for event in events if event.get("type") == "tool_result"]
     if not calls and not results:
-        return TraceAssertion("agent_call_pairing", "skill_call ↔ skill_result 一一配对", True)
+        return TraceAssertion("agent_call_pairing", title, True)
 
     call_ids = [str(event.get("call_id") or "") for event in calls]
     result_ids = [str(event.get("call_id") or "") for event in results]
     if not all(call_ids) or not all(result_ids):
         return TraceAssertion(
             "agent_call_pairing",
-            "skill_call ↔ skill_result 一一配对",
+            title,
             False,
             "存在缺失 call_id 的调用或结果事件，无法配对",
         )
@@ -355,7 +374,7 @@ def _check_call_pairing(events: list[dict[str, Any]]) -> TraceAssertion:
         problems.append(f"结果缺少调用 call_id={orphan}")
     return TraceAssertion(
         "agent_call_pairing",
-        "skill_call ↔ skill_result 一一配对",
+        title,
         not problems,
         "；".join(problems),
     )
@@ -375,7 +394,7 @@ def _check_agent_terminal(counts: Counter[str]) -> TraceAssertion:
 
 
 def _check_confirm_isolation(events: list[dict[str, Any]]) -> TraceAssertion:
-    """写操作弹出确认卡片时，同一回合不得执行该 Skill（inline 模式先确认后执行）。"""
+    """写操作弹出确认卡片时，同一回合不得执行该工具（inline 模式先确认后执行）。"""
     confirmations = [
         event for event in events if event.get("type") == "agent_confirm_required"
     ]
@@ -386,16 +405,16 @@ def _check_confirm_isolation(events: list[dict[str, Any]]) -> TraceAssertion:
     missing_fields = [
         index
         for index, event in enumerate(confirmations, start=1)
-        if not event.get("skill_name") or not event.get("approval_id")
+        if not event.get("tool_name") or not event.get("approval_id")
     ]
     if missing_fields:
-        problems.append(f"第 {missing_fields} 张确认卡片缺少 skill_name / approval_id")
+        problems.append(f"第 {missing_fields} 张确认卡片缺少 tool_name / approval_id")
 
-    confirmed = {str(event.get("skill_name") or "") for event in confirmations}
+    confirmed = {str(event.get("tool_name") or "") for event in confirmations}
     executed = {
         str(event.get("name") or "")
         for event in events
-        if event.get("type") == "skill_call"
+        if event.get("type") == "tool_call"
     }
     leaked = sorted(confirmed & executed)
     if leaked:
@@ -424,14 +443,14 @@ def _check_reflect(events: list[dict[str, Any]]) -> TraceAssertion:
         failed_tools = [
             str(event.get("name") or "")
             for event in events[window_start:index]
-            if event.get("type") == "skill_result" and not event.get("ok")
+            if event.get("type") == "tool_result" and not event.get("ok")
         ]
         remaining = [str(event.get("type") or "") for event in events[index + 1 :]]
         if decision not in AGENT_REFLECT_DECISIONS:
             problems.append(f"非法反思决策 {decision!r}")
         elif decision == "pass" and failed_tools:
             problems.append(f"存在失败工具 {failed_tools} 却放行（pass）")
-        elif decision == "retry" and "skill_call" not in remaining:
+        elif decision == "retry" and "tool_call" not in remaining:
             problems.append("retry 后未重新调用工具")
         elif decision == "fallback" and "agent_fallback" not in remaining:
             problems.append("fallback 决策后未走兜底")

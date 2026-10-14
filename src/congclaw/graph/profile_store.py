@@ -6,7 +6,7 @@
   LLM 不可用/返回非法时退化为确定性规则合并（保证无模型环境也可跨会话记忆）；
 - 新会话开始时 :func:`aget_user_profile` 装载，注入主图长期记忆层（P5-8）。
 
-与 ``skills/business_store.py``、``rag/store.py`` 一致采用 aiosqlite 短连接，
+与 ``domain/business_store.py``、``rag/store.py`` 一致采用 aiosqlite 短连接，
 规避"连接跨事件循环"问题。
 """
 
@@ -38,7 +38,7 @@ _ROUTE_TOPICS = {
     "workflow": "",
 }
 
-_SKILL_TOPICS = {
+_TOOL_TOPICS = {
     "query_balance": "话费余额查询",
     "query_package": "当前套餐与余量查询",
     "list_packages": "可办理套餐咨询",
@@ -259,18 +259,18 @@ def _rule_based_merge(
     tool_traces: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """无 LLM 时的确定性合并：工具轨迹 + 路由 + 关键词抽取。"""
-    skills = [
+    tools = [
         str(event.get("name") or "")
         for event in tool_traces
-        if event.get("type") == "skill_call"
+        if event.get("type") == "tool_call"
     ]
     text_blob = " ".join(
         str(turn.get("content") or "") for turn in new_turns if turn.get("role") == "user"
     )
 
     new_topics: list[str] = []
-    for skill in skills:
-        label = _SKILL_TOPICS.get(skill)
+    for tool in tools:
+        label = _TOOL_TOPICS.get(tool)
         if label:
             new_topics.append(label)
     if not new_topics:
@@ -338,7 +338,7 @@ def _compression_payload(
                 "preview": _clip(str(event.get("preview") or ""), 400),
             }
             for event in tool_traces
-            if event.get("type") == "skill_result"
+            if event.get("type") == "tool_result"
         ],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
@@ -359,7 +359,7 @@ def _extract_package(text: str) -> str:
 
 def _extract_package_from_traces(tool_traces: list[dict[str, Any]]) -> str:
     for event in tool_traces:
-        if event.get("type") != "skill_call":
+        if event.get("type") != "tool_call":
             continue
         args = event.get("args") or {}
         if isinstance(args, dict):
@@ -378,7 +378,7 @@ def _extract_package_from_traces(tool_traces: list[dict[str, Any]]) -> str:
 def _tickets_from_traces(tool_traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
     tickets: list[dict[str, Any]] = []
     for event in tool_traces:
-        if event.get("type") != "skill_result" or event.get("name") != "report_fault":
+        if event.get("type") != "tool_result" or event.get("name") != "report_fault":
             continue
         if not event.get("ok"):
             continue

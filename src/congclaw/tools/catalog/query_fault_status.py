@@ -1,14 +1,14 @@
-"""P4-6：故障工单进度查询（只读）。"""
+"""P4-6：故障工单进度查询（只读原子工具）。"""
 
 from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from congclaw.skills.base import Skill, SkillContext, SkillParameter
-from congclaw.skills.business_store import get_fault_ticket, list_fault_tickets
+from congclaw.domain.business_store import get_fault_ticket, list_fault_tickets
+from congclaw.tools.base import Tool, ToolContext, ToolParameter
 
 
-class QueryFaultStatusSkill(Skill):
+class QueryFaultStatusTool(Tool):
     name: ClassVar[str] = "query_fault_status"
     description: ClassVar[str] = (
         "查询故障报修工单的处理进度与当前状态。"
@@ -16,12 +16,12 @@ class QueryFaultStatusSkill(Skill):
         "用户问「我的报修单怎么样了」「工单进度」「修好没有」时调用。"
     )
     access: ClassVar[str] = "read"
-    parameters: ClassVar[list[SkillParameter]] = [
-        SkillParameter(name="ticket_id", description="故障工单号（如 FT20261001...）", type="string", required=False),
-        SkillParameter(name="phone", description="报修号码（无工单号时按号码查最近工单）", type="string", required=False),
+    parameters: ClassVar[list[ToolParameter]] = [
+        ToolParameter(name="ticket_id", description="故障工单号（如 FT20261001...）", type="string", required=False),
+        ToolParameter(name="phone", description="报修号码（无工单号时按号码查最近工单）", type="string", required=False),
     ]
 
-    async def run(self, context: SkillContext, **kwargs: Any) -> dict[str, Any]:
+    async def run(self, context: ToolContext, **kwargs: Any) -> dict[str, Any]:
         args = self.validate_arguments(kwargs, context)
         phone = str(args.get("phone") or context.phone)
         ticket_id = str(args.get("ticket_id") or "").strip()
@@ -40,4 +40,4 @@ class QueryFaultStatusSkill(Skill):
         return {"query": "fault_status", "lookup": "by_phone", "phone": phone, "tickets": tickets, "count": len(tickets)}
 
 
-SKILL = QueryFaultStatusSkill()
+TOOL = QueryFaultStatusTool()

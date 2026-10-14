@@ -42,7 +42,7 @@ class EvalSample:
 
 def normalize(trace: SessionTrace, labeled: dict[str, Any]) -> EvalSample:
     """把一条 trace 与标注样本合并为 EvalSample。"""
-    actual_tools = [str(call.get("name") or "") for call in trace.skill_calls]
+    actual_tools = [str(call.get("name") or "") for call in trace.tool_calls]
     actual_fallback = "none"
     if trace.fallback:
         actual_fallback = str(trace.fallback.get("reason") or "irrelevant_request")
@@ -72,8 +72,8 @@ def normalize(trace: SessionTrace, labeled: dict[str, Any]) -> EvalSample:
         actual_answer=trace.final_answer,
         actual_fallback=actual_fallback,
         clarify_rounds=len(trace.clarify_questions),
-        tool_calls=trace.skill_calls,
-        tool_results=trace.skill_results,
+        tool_calls=trace.tool_calls,
+        tool_results=trace.tool_results,
         rag_hit_count=rag_hit_count,
         reflect_decision=reflect_decision,
         trace_id=trace.trace_id,

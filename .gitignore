@@ -14,3 +14,5 @@ models/
 *.db-wal
 *.db-shm
 eval/reports/
+*.log
+probe-ui-*/

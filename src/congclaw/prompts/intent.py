@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 # 五类意图（模型输出类别）
 INTENT_CATEGORIES = ("rag_query", "agent_service", "clarify", "irrelevant", "unknown")
 
@@ -37,9 +39,45 @@ INTENT_ROUTER_PROMPT = """你是电信客服智能体的意图识别模块，把
 missing_slots：当类别为 agent_service 且缺少办理/查询必需信息时列出待补槽位
 （如报修缺"故障现象/联系地址"、套餐变更缺"目标套餐名称"）；其他类别输出空数组。
 
+skill / slots：当类别为 agent_service 时，从随附的「编排技能清单」里选一个最匹配的
+编排技能名填入 skill（没有匹配时留空字符串），并把该技能参数的实参抽成 slots 对象
+（键为参数名，值直接取自用户话语；未提及的可选项省略，绝不臆造号码/地址/套餐名）。
+slots 的值必须落在该参数的「取值」范围内；没有标注取值范围的按用户原话填写。
+
 只输出 JSON，不要输出任何其他内容：
-{"category": "rag_query|agent_service|clarify|irrelevant|unknown", "confidence": 0.0到1.0, "reason": "一句话理由", "missing_slots": []}
+{"category": "rag_query|agent_service|clarify|irrelevant|unknown", "confidence": 0.0到1.0, "reason": "一句话理由", "missing_slots": [], "skill": "", "slots": {}}
 """
+
+SKILL_MENU_HEADER = "\n\n【编排技能清单（类别为 agent_service 时从中选择 skill）】"
+
+
+def _render_param(param: dict[str, Any]) -> str:
+    """渲染单个参数：名称 + 必填标记 + 枚举取值。
+
+    枚举必须在清单里显式给出——否则模型会把半句自然语言当作枚举值原样填进来，
+    参数校验直接失败、整轮编排作废。
+    """
+    text = f"{param['name']}{'（必填）' if param.get('required') else '（可选）'}"
+    enum = param.get("enum")
+    if enum:
+        text += f"，取值：{'/'.join(str(value) for value in enum)}"
+    return text
+
+
+def render_skill_menu(catalog: list[dict[str, Any]]) -> str:
+    """把编排型 Skill 的动态元信息渲染成意图识别用的清单文本。
+
+    与思考节点拼工具清单同理：清单来自注册中心实时元信息，编排技能热插拔后
+    模型看到的候选清单当轮即更新。
+    """
+    if not catalog:
+        return ""
+    lines = [SKILL_MENU_HEADER]
+    for item in catalog:
+        params = "，".join(_render_param(param) for param in item.get("parameters", []))
+        hint = str(item.get("intent_hint") or item.get("description") or "").strip()
+        lines.append(f"- {item['name']}：{hint}；参数：{params or '无'}")
+    return "\n".join(lines)
 
 CLARIFY_PROMPT = """你是电信客服智能体的追问澄清节点。
 

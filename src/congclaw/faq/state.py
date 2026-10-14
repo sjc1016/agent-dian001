@@ -18,7 +18,7 @@ class FaqSedimentState(TypedDict, total=False):
     confidence: float  # 意图置信度
     final_answer: str  # 本轮最终答复
     sources: list[dict[str, Any]]  # RAG 检索来源
-    tool_traces: list[dict[str, Any]]  # Skill 调用轨迹
+    tool_traces: list[dict[str, Any]]  # 原子工具调用轨迹
     recent_turns: list[dict[str, Any]]  # 短期会话窗口（回溯审批轮的真实诉求）
     session_id: str
     session_turn: int

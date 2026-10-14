@@ -2,7 +2,10 @@
 
 拓扑（PRD 3.4 节）：
 
-    START → approval_entry ─┬─ think ─→ act（asyncio.gather 多工具并行）
+    START → approval_entry ─┬─ skill → skill_exec ─┬─ finalize（编排全步成功/确认卡片）
+                            │                       ├─ reflect（编排失败时才校验）
+                            │                       └─ think（编排技能缺失，回退自主规划）
+                            ├─ think ─→ act（asyncio.gather 多工具并行）
                             │              ├─ 确认卡片 → finalize（等待下一轮）
                             │              └─ reflect ─┬─ pass     → finalize
                             │                           ├─ retry    → think（attempts 限制）
@@ -10,7 +13,7 @@
                             ├─ act（确认恢复执行）→ reflect ...
                             └─ finalize（取消/无需工具）
 
-approval_entry 的三条分支都由条件边按 entry_decision 路由。
+approval_entry 的分支都由条件边按 entry_decision 路由。
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ from congclaw.agent.nodes import (
     finalize_node,
     reflect_node,
     reflect_route,
+    skill_exec_node,
+    skill_exec_route,
     think_node,
     think_route,
 )
@@ -37,6 +42,7 @@ def build_agent_subgraph():
     graph = StateGraph(AgentSubState)
 
     graph.add_node("approval_entry", approval_entry_node)
+    graph.add_node("skill_exec", skill_exec_node)
     graph.add_node("think", think_node)
     graph.add_node("act", act_node)
     graph.add_node("reflect", reflect_node)
@@ -47,7 +53,12 @@ def build_agent_subgraph():
     graph.add_conditional_edges(
         "approval_entry",
         approval_entry_route,
-        {"think": "think", "act": "act", "cancel": "finalize"},
+        {"skill": "skill_exec", "think": "think", "act": "act", "cancel": "finalize"},
+    )
+    graph.add_conditional_edges(
+        "skill_exec",
+        skill_exec_route,
+        {"finalize": "finalize", "reflect": "reflect", "think": "think"},
     )
     graph.add_conditional_edges("think", think_route, {"act": "act", "finalize": "finalize"})
     graph.add_conditional_edges(

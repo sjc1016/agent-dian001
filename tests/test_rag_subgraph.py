@@ -453,7 +453,7 @@ def test_main_graph_rag_query_routes_into_rag_subgraph(monkeypatch, tmp_path) ->
     """主图 rag_query → rag_answer 节点内挂载子图，custom 事件透传到主流。"""
     _patch_hit_path(monkeypatch)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "rag-main-test.db"))
-    monkeypatch.setenv("SKILL_WATCH", "0")
+    monkeypatch.setenv("HOTLOAD_WATCH", "0")
 
     payload = json.dumps(
         {"category": "rag_query", "confidence": 0.95, "reason": "资费咨询", "missing_slots": []},

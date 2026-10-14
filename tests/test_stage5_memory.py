@@ -47,7 +47,7 @@ from congclaw.graph.workflow import build_entry_workflow
 @pytest.fixture(autouse=True)
 def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DB_PATH", str(tmp_path / "stage5.db"))
-    monkeypatch.setenv("SKILL_WATCH", "0")
+    monkeypatch.setenv("HOTLOAD_WATCH", "0")
     monkeypatch.setenv("RAG_PREWARM", "0")
 
 
@@ -407,10 +407,10 @@ def test_consolidate_rule_based_fallback_topics_package_and_ticket(monkeypatch, 
     phone = "13900000002"
     session = _session_with_turn(1, "帮我改成5G畅享199元档，另外家里宽带断了帮我报修")
     traces = [
-        {"type": "skill_call", "name": "change_package", "args": {"target_package": "5G畅享199元档"}},
-        {"type": "skill_call", "name": "report_fault", "args": {"fault_type": "宽带故障"}},
+        {"type": "tool_call", "name": "change_package", "args": {"target_package": "5G畅享199元档"}},
+        {"type": "tool_call", "name": "report_fault", "args": {"fault_type": "宽带故障"}},
         {
-            "type": "skill_result",
+            "type": "tool_result",
             "name": "report_fault",
             "ok": True,
             "preview": json.dumps(
@@ -500,7 +500,7 @@ def test_consolidate_llm_merge_with_rule_fill(monkeypatch, tmp_path: Path) -> No
     phone = "13900000004"
     session = _session_with_turn(1, "帮我改成5G畅享299元档，顺便问下国际漫游")
     traces = [
-        {"type": "skill_call", "name": "change_package", "args": {"target_package": "5G畅享299元档"}},
+        {"type": "tool_call", "name": "change_package", "args": {"target_package": "5G畅享299元档"}},
     ]
 
     async def _scenario() -> None:
@@ -529,9 +529,9 @@ def test_consolidate_completed_ticket_removed(monkeypatch, tmp_path: Path) -> No
     async def _scenario() -> None:
         session1 = _session_with_turn(1, "家里宽带断了，帮我报修")
         traces1 = [
-            {"type": "skill_call", "name": "report_fault", "args": {"fault_type": "宽带故障"}},
+            {"type": "tool_call", "name": "report_fault", "args": {"fault_type": "宽带故障"}},
             {
-                "type": "skill_result",
+                "type": "tool_result",
                 "name": "report_fault",
                 "ok": True,
                 "preview": json.dumps(
@@ -549,7 +549,7 @@ def test_consolidate_completed_ticket_removed(monkeypatch, tmp_path: Path) -> No
         session2 = _session_with_turn(2, "工单处理好了吗")
         traces2 = [
             {
-                "type": "skill_result",
+                "type": "tool_result",
                 "name": "report_fault",
                 "ok": True,
                 "preview": json.dumps(
@@ -716,9 +716,9 @@ def test_coreference_script_rewrite_then_route_agent_with_package_slot(
     thinking = _event(events3, "agent_thinking")
     package_call = next(call for call in thinking["calls"] if call["name"] == "change_package")
     assert package_call["args"]["target_package"] == "5G畅享129元档"
-    # 写操作必须出人工确认卡片，且未实际执行技能
+    # 写操作必须出人工确认卡片，且未实际执行原子工具
     assert _event(events3, "agent_confirm_required")
-    assert not [e for e in events3 if e.get("type") in ("skill_call", "skill_result")]
+    assert not [e for e in events3 if e.get("type") in ("tool_call", "tool_result")]
     assert updates3["agent_loop"]["final_answer"]
 
 

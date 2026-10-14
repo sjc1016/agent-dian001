@@ -18,7 +18,7 @@ import aiosqlite
 
 from congclaw.db.baseline import DEFAULT_PACKAGE_ID, provision_account_baseline
 from congclaw.db.engine import init_db, resolve_db_path
-from congclaw.skills.base import SkillError
+from congclaw.tools.base import ToolError
 
 # 演示环境的默认用户号码（用户未显式提供手机号时使用）
 DEFAULT_DEMO_PHONE = "13800138000"
@@ -50,7 +50,7 @@ def _money(value: Any) -> float:
 
 
 async def get_account(phone: str) -> dict[str, Any]:
-    """查询账户余额与本月实时话费；账户不存在抛 SkillError。"""
+    """查询账户余额与本月实时话费；账户不存在抛 ToolError。"""
     await _ensure()
     async with _connect() as connection:
         connection.row_factory = aiosqlite.Row
@@ -61,7 +61,7 @@ async def get_account(phone: str) -> dict[str, Any]:
         )
         row = await cursor.fetchone()
     if row is None:
-        raise SkillError(f"未查询到号码 {phone} 的账户信息，请确认号码是否正确。", code="account_not_found")
+        raise ToolError(f"未查询到号码 {phone} 的账户信息，请确认号码是否正确。", code="account_not_found")
     data = dict(row)
     data["balance"] = _money(data["balance"])
     data["real_time_fee"] = _money(data["real_time_fee"])
@@ -129,7 +129,7 @@ async def get_user_package_detail(phone: str) -> dict[str, Any]:
         )
         row = await cursor.fetchone()
     if row is None:
-        raise SkillError(f"未查询到号码 {phone} 的在网套餐信息。", code="package_not_found")
+        raise ToolError(f"未查询到号码 {phone} 的在网套餐信息。", code="package_not_found")
     data = dict(row)
     quota = float(data.get("data_quota_gb") or 0.0)
     used = float(data.get("data_used_gb") or 0.0)
@@ -172,11 +172,52 @@ async def list_packages(keyword: str = "", *, active_only: bool = True) -> list[
     return result
 
 
+# 目标套餐表述中的口语化修饰词：解析前剥离，避免用户/模型说「5G畅享199元档套餐」
+# 这类自然语言说法因多出「套餐」「办理」等字样而匹配不上套餐目录名称。
+_PACKAGE_NOISE_TOKENS = (
+    "套餐",
+    "资费",
+    "业务",
+    "产品",
+    "档位",
+    "档",
+    "办理",
+    "申请",
+    "更换",
+    "变更",
+    "改成",
+    "换成",
+)
+
+
+def _normalize_package_text(text: str) -> str:
+    """剥离口语化修饰与空白，仅保留套餐标识性文本。"""
+    value = (text or "").strip()
+    for token in _PACKAGE_NOISE_TOKENS:
+        value = value.replace(token, "")
+    return value.replace(" ", "").replace("\u3000", "")
+
+
+def _match_packages(rows: list[aiosqlite.Row], target: str) -> list[aiosqlite.Row]:
+    """按标识性文本匹配套餐：先原文包含，再剥离口语化修饰后包含。"""
+    exact = [row for row in rows if target in row["name"]]
+    if exact:
+        return exact
+    normalized = _normalize_package_text(target)
+    if not normalized:
+        return []
+    return [row for row in rows if normalized in _normalize_package_text(row["name"])]
+
+
 async def resolve_package(target: str) -> dict[str, Any]:
-    """按 package_id 精确、名称包含（唯一命中）解析目标套餐。"""
+    """按 package_id 精确、名称包含（唯一命中）解析目标套餐。
+
+    名称匹配容忍自然语言修饰，例如「5G畅享199元档套餐」「办理 199 元档」均可
+    解析到目录中的「5G畅享199元档」。
+    """
     target = (target or "").strip()
     if not target:
-        raise SkillError("缺少目标套餐信息（套餐名称或套餐编号）。", code="missing_package")
+        raise ToolError("缺少目标套餐信息（套餐名称或套餐编号）。", code="missing_package")
     async with _connect() as connection:
         connection.row_factory = aiosqlite.Row
         cursor = await connection.execute(
@@ -190,17 +231,16 @@ async def resolve_package(target: str) -> dict[str, Any]:
             cursor = await connection.execute(
                 "SELECT package_id, name, monthly_fee, data_quota_gb, voice_minutes,"
                 " broadband_mbps, description, active FROM package_catalog"
-                " WHERE active = 1 AND name LIKE ? ORDER BY monthly_fee",
-                (f"%{target}%",),
+                " WHERE active = 1 ORDER BY monthly_fee"
             )
-            matches = await cursor.fetchall()
+            matches = _match_packages(await cursor.fetchall(), target)
             if len(matches) == 1:
                 row = matches[0]
             elif len(matches) > 1:
                 names = "、".join(item["name"] for item in matches)
-                raise SkillError(f"匹配到多个套餐：{names}，请告知具体档位名称。", code="ambiguous_package")
+                raise ToolError(f"匹配到多个套餐：{names}，请告知具体档位名称。", code="ambiguous_package")
     if row is None:
-        raise SkillError(f"未找到可办理的套餐「{target}」，可先查询可办理套餐列表。", code="package_not_found")
+        raise ToolError(f"未找到可办理的套餐「{target}」，可先查询可办理套餐列表。", code="package_not_found")
     item = dict(row)
     item["monthly_fee"] = _money(item["monthly_fee"])
     item["data_quota_gb"] = _money(item["data_quota_gb"])
@@ -230,9 +270,9 @@ async def create_fault_ticket(
     # 号码必须是在网账户（模拟真实 BOSS 校验）
     account = await get_account(phone)
     if fault_type not in FAULT_TYPES:
-        raise SkillError(f"故障类型仅支持：{'、'.join(FAULT_TYPES)}", code="invalid_fault_type")
+        raise ToolError(f"故障类型仅支持：{'、'.join(FAULT_TYPES)}", code="invalid_fault_type")
     if not description.strip():
-        raise SkillError("请描述故障现象（如断网时间、光猫指示灯情况）。", code="missing_description")
+        raise ToolError("请描述故障现象（如断网时间、光猫指示灯情况）。", code="missing_description")
     ticket_id = new_ticket_id()
     now = utc_now()
     async with _connect() as connection:
@@ -281,7 +321,7 @@ async def get_fault_ticket(ticket_id: str) -> dict[str, Any]:
         )
         row = await cursor.fetchone()
     if row is None:
-        raise SkillError(f"未查询到工单 {ticket_id}，请核对工单号。", code="ticket_not_found")
+        raise ToolError(f"未查询到工单 {ticket_id}，请核对工单号。", code="ticket_not_found")
     return dict(row)
 
 
@@ -312,7 +352,7 @@ async def change_package(phone: str, target: str) -> dict[str, Any]:
     account = await get_account(phone)
     try:
         current = await get_user_package_detail(phone)
-    except SkillError as error:
+    except ToolError as error:
         if error.code != "package_not_found":
             raise
         # 该号码尚未建立套餐基线（历史数据缺失或早期注册账号）：
@@ -321,7 +361,7 @@ async def change_package(phone: str, target: str) -> dict[str, Any]:
         current = await get_user_package_detail(phone)
     target_pkg = await resolve_package(target)
     if target_pkg["package_id"] == current["package_id"]:
-        raise SkillError(
+        raise ToolError(
             f"号码 {phone} 当前已是「{current['package_name']}」，无需重复变更。",
             code="same_package",
         )
@@ -374,7 +414,7 @@ async def save_pending_approval(
     workspace: str,
     *,
     approval_id: str,
-    skill_name: str,
+    tool_name: str,
     args: dict[str, Any],
     summary: str,
 ) -> dict[str, Any]:
@@ -389,12 +429,12 @@ async def save_pending_approval(
         )
         await connection.execute(
             "INSERT INTO pending_approval"
-            " (approval_id, workspace, skill_name, args_json, summary, status, created_at, updated_at)"
+            " (approval_id, workspace, tool_name, args_json, summary, status, created_at, updated_at)"
             " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
             (
                 approval_id,
                 workspace,
-                skill_name,
+                tool_name,
                 json.dumps(args, ensure_ascii=False, default=str),
                 summary,
                 now,
@@ -405,7 +445,7 @@ async def save_pending_approval(
     return {
         "approval_id": approval_id,
         "workspace": workspace,
-        "skill_name": skill_name,
+        "tool_name": tool_name,
         "args": dict(args),
         "summary": summary,
         "status": "pending",
@@ -419,7 +459,7 @@ async def get_pending_approval(workspace: str) -> dict[str, Any] | None:
     async with _connect() as connection:
         connection.row_factory = aiosqlite.Row
         cursor = await connection.execute(
-            "SELECT approval_id, workspace, skill_name, args_json, summary, status, created_at, updated_at"
+            "SELECT approval_id, workspace, tool_name, args_json, summary, status, created_at, updated_at"
             " FROM pending_approval WHERE workspace = ? AND status = 'pending'"
             " ORDER BY created_at DESC LIMIT 1",
             (workspace,),

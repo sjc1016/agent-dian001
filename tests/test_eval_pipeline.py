@@ -39,8 +39,8 @@ def _make_events() -> list[dict]:
             "reasoning": "需要查询余额",
             "calls": [{"name": "query_balance", "args": {}, "call_id": "c1"}],
         },
-        {"type": "skill_call", "name": "query_balance", "call_id": "c1", "args": {}},
-        {"type": "skill_result", "name": "query_balance", "call_id": "c1", "ok": True, "preview": "86.5"},
+        {"type": "tool_call", "name": "query_balance", "call_id": "c1", "args": {}},
+        {"type": "tool_result", "name": "query_balance", "call_id": "c1", "ok": True, "preview": "86.5"},
         {"type": "agent_reflect", "decision": "pass", "reason": "ok", "checks": []},
         {"type": "agent_answer", "mode": "generated", "preview": "您的余额为 86.50 元。"},
         {"type": "session_turn_saved", "turn": 1, "route": "agent_loop"},
@@ -68,8 +68,8 @@ def test_collect_from_events_parses_agent_trace() -> None:
     assert trace.trace_id == "t1"
     assert trace.category == "agent_service"
     assert trace.route == "agent_loop"
-    assert len(trace.skill_calls) == 1
-    assert trace.skill_calls[0]["name"] == "query_balance"
+    assert len(trace.tool_calls) == 1
+    assert trace.tool_calls[0]["name"] == "query_balance"
     assert trace.agent_reflect is not None
     assert trace.agent_reflect["decision"] == "pass"
     assert trace.agent_start is not None
@@ -459,8 +459,8 @@ def test_trace_checks_detect_agent_routing_mismatch() -> None:
     assert not _assertion(report, "agent_trigger").passed
 
 
-def test_trace_checks_detect_unpaired_skill_result() -> None:
-    events = [e for e in _make_events() if e.get("type") != "skill_result"]
+def test_trace_checks_detect_unpaired_tool_result() -> None:
+    events = [e for e in _make_events() if e.get("type") != "tool_result"]
     report = run_trace_checks(collect_from_events(events))
     pairing = _assertion(report, "agent_call_pairing")
     assert not pairing.passed
@@ -479,7 +479,7 @@ def test_trace_checks_detect_confirm_card_leaked_execution() -> None:
     events = _make_events()
     events.insert(
         6,
-        {"type": "agent_confirm_required", "approval_id": "ap-1", "skill_name": "query_balance"},
+        {"type": "agent_confirm_required", "approval_id": "ap-1", "tool_name": "query_balance"},
     )
     report = run_trace_checks(collect_from_events(events))
     isolation = _assertion(report, "agent_confirm_isolation")
@@ -489,7 +489,7 @@ def test_trace_checks_detect_confirm_card_leaked_execution() -> None:
 
 def test_trace_checks_detect_reflect_pass_with_failed_tool() -> None:
     events = _make_events()
-    events[8] = {"type": "skill_result", "name": "query_balance", "call_id": "c1", "ok": False}
+    events[8] = {"type": "tool_result", "name": "query_balance", "call_id": "c1", "ok": False}
     report = run_trace_checks(collect_from_events(events))
     consistency = _assertion(report, "agent_reflect_consistency")
     assert not consistency.passed
@@ -667,7 +667,7 @@ def test_report_trace_section_is_independent_of_pass_rate() -> None:
     rule_report = run_rule_checks(sample)
     assert rule_report.passed
 
-    broken = [e for e in _make_events() if e.get("type") != "skill_result"]
+    broken = [e for e in _make_events() if e.get("type") != "tool_result"]
     trace_report = run_trace_checks(collect_from_events(broken))
     assert not trace_report.passed
 

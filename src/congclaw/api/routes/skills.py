@@ -1,10 +1,12 @@
-"""P4-11：Skill 动态管理路由（MCP 工具热插拔的对外管理面）。
+"""P4-11：编排技能动态管理路由（热插拔编排能力的对外管理面）。
 
-- ``GET    /api/v1/skills``：列出当前注册中心全部 Skill 元信息（含内置/外部来源）；
-- ``POST   /api/v1/skills``：上传一个 Skill 源码文件到外部目录（默认 data/skills/），
-  写入后立即重扫，运行中进程无需重启即可被 Agent 发现并调用；
-- ``DELETE /api/v1/skills/{name}``：热卸载（外部文件删除；内置文件仅注销，
+- ``GET    /api/v1/skills``：列出当前注册中心全部编排技能元信息（含内置/外置来源）；
+- ``POST   /api/v1/skills``：上传一个 Skill 源码文件到外置目录（默认 data/skills/），
+  写入后立即重扫，运行中进程无需重启即可被意图路由发现并挑选；
+- ``DELETE /api/v1/skills/{name}``：热卸载（外置文件删除；内置文件仅注销，
   文件内容变更后由监听线程自动恢复）。
+
+编排技能不进 LLM 的工具表，原子工具的注册与取用见 ``/api/v1/tools``。
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from congclaw.skills.registry import get_registry
+from congclaw.skills.registry import get_skill_registry
 
 router = APIRouter(prefix="/api/v1/skills", tags=["skills"])
 
@@ -26,8 +28,8 @@ class CreateSkillRequest(BaseModel):
 
 @router.get("")
 async def list_skills() -> dict:
-    """列出全部已加载 Skill 的元信息（思考节点 bind_tools 即取同一注册表）。"""
-    registry = get_registry()
+    """列出全部已加载编排技能的元信息（intent_router 挑选候选即取同一注册表）。"""
+    registry = get_skill_registry()
     items = registry.list_metadata()
     builtin = [item for item in items if item.get("source") == "builtin"]
     external = [item for item in items if item.get("source") == "external"]
@@ -41,10 +43,10 @@ async def list_skills() -> dict:
 
 @router.post("", status_code=201)
 async def create_skill(request: CreateSkillRequest) -> dict:
-    """写入外部 Skill 文件并立即热注册；非法文件回滚并返回 400。"""
-    registry = get_registry()
+    """写入外置 Skill 文件并立即热注册；非法文件回滚并返回 400。"""
+    registry = get_skill_registry()
     try:
-        result = registry.write_external_skill(request.name.strip(), request.content)
+        result = registry.write_external_item(request.name.strip(), request.content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -57,10 +59,10 @@ async def create_skill(request: CreateSkillRequest) -> dict:
 
 @router.delete("/{name}")
 async def delete_skill(name: str) -> dict:
-    """热卸载 Skill：外部文件直接删除，内置 Skill 仅内存注销。"""
-    registry = get_registry()
+    """热卸载 Skill：外置文件直接删除，内置 Skill 仅内存注销。"""
+    registry = get_skill_registry()
     try:
         result = registry.unregister(name)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Skill 不存在：{name}") from exc
+        raise HTTPException(status_code=404, detail=f"编排技能不存在：{name}") from exc
     return {"status": "unregistered", **result}

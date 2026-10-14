@@ -1,7 +1,8 @@
-"""阶段 4 验收（P4-9/P4-10 + 验收门④）：Skill 动态注册中心。
+"""阶段 4 验收（P4-9/P4-10 + 验收门④）：编排技能动态注册中心。
 
-覆盖：运行中写入即可发现调用、删除即注销、内置 Skill 热卸载后内容变更自动恢复、
-非法文件名忽略、同名冲突内置优先、后台 watcher 线程免重启热加载。
+覆盖：运行中写入即可发现调用、删除即注销、内置技能热卸载后内容变更自动恢复、
+非法文件名忽略、同名冲突内置优先、后台 watcher 线程免重启热加载，以及
+「技能目录只收 SKILL」的类型守门。原子工具的注册中心另见 ``tests/test_tools.py``。
 """
 
 from __future__ import annotations
@@ -16,19 +17,35 @@ from congclaw.skills.base import SkillContext
 from congclaw.skills.registry import SkillRegistry
 
 _ECHO_SKILL_SOURCE = '''
-from congclaw.skills.base import Skill, SkillParameter
+from congclaw.skills.base import Skill
+from congclaw.tools.base import ToolParameter
 
 
 class EchoSkill(Skill):
     name = "echo_demo"
     description = "echo back the input text"
-    parameters = [SkillParameter(name="text", description="text to echo", required=True)]
+    parameters = [ToolParameter(name="text", description="text to echo", required=True)]
 
     async def run(self, context, **kwargs):
         return {"echo": kwargs.get("text")}
 
 
 SKILL = EchoSkill()
+'''
+
+_ECHO_TOOL_SOURCE = '''
+from congclaw.tools.base import Tool
+
+
+class EchoTool(Tool):
+    name = "echo_demo"
+    description = "echo back the input text"
+
+    async def run(self, context, **kwargs):
+        return {"echo": kwargs.get("text")}
+
+
+TOOL = EchoTool()
 '''
 
 
@@ -50,7 +67,7 @@ def test_empty_registry_starts_clean(tmp_path: Path) -> None:
 
     assert registry.all() == []
     assert registry.try_get("echo_demo") is None
-    assert registry.openai_tools() == []
+    assert registry.list_metadata() == []
 
 
 def test_external_file_discovered_after_rescan(tmp_path: Path) -> None:
@@ -67,12 +84,12 @@ def test_external_file_discovered_after_rescan(tmp_path: Path) -> None:
     assert result == {"echo": "你好"}
 
 
-def test_write_external_skill_takes_effect_immediately(tmp_path: Path) -> None:
-    """验收门④：运行中通过管理接口新增 Skill，无需重启当轮即可调用。"""
+def test_write_external_item_takes_effect_immediately(tmp_path: Path) -> None:
+    """验收门④：运行中通过管理接口新增技能，无需重启当轮即可被发现。"""
     builtin, external = _make_dirs(tmp_path)
     registry = SkillRegistry(builtin_dir=builtin, extra_dir=external, watch=False)
 
-    info = registry.write_external_skill("echo_demo", _ECHO_SKILL_SOURCE)
+    info = registry.write_external_item("echo_demo", _ECHO_SKILL_SOURCE)
 
     assert info["name"] == "echo_demo"
     assert Path(info["file"]).exists()
@@ -81,24 +98,36 @@ def test_write_external_skill_takes_effect_immediately(tmp_path: Path) -> None:
     assert metadata["echo_demo"]["source"] == "external"
 
 
-def test_write_external_skill_rejects_bad_name_and_rolls_back(tmp_path: Path) -> None:
+def test_write_external_item_rejects_bad_name_and_rolls_back(tmp_path: Path) -> None:
     builtin, external = _make_dirs(tmp_path)
     registry = SkillRegistry(builtin_dir=builtin, extra_dir=external, watch=False)
 
     with pytest.raises(ValueError):
-        registry.write_external_skill("bad-name", _ECHO_SKILL_SOURCE)
+        registry.write_external_item("bad-name", _ECHO_SKILL_SOURCE)
 
     # 内容无法加载（缺少 SKILL 暴露）：报错并回滚删除文件
     with pytest.raises(ValueError):
-        registry.write_external_skill("broken_skill", "x = 1\n")
+        registry.write_external_item("broken_skill", "x = 1\n")
     assert not (external / "broken_skill.py").exists()
     assert registry.try_get("broken_skill") is None
+
+
+def test_registry_rejects_tool_source_in_skill_dir(tmp_path: Path) -> None:
+    """技能目录只收 ``SKILL``：暴露 ``TOOL`` 的原子工具文件加载失败并回滚。"""
+    builtin, external = _make_dirs(tmp_path)
+    registry = SkillRegistry(builtin_dir=builtin, extra_dir=external, watch=False)
+
+    with pytest.raises(ValueError):
+        registry.write_external_item("echo_demo", _ECHO_TOOL_SOURCE)
+
+    assert not (external / "echo_demo.py").exists()
+    assert registry.try_get("echo_demo") is None
 
 
 def test_unregister_external_deletes_file_and_unloads(tmp_path: Path) -> None:
     builtin, external = _make_dirs(tmp_path)
     registry = SkillRegistry(builtin_dir=builtin, extra_dir=external, watch=False)
-    registry.write_external_skill("echo_demo", _ECHO_SKILL_SOURCE)
+    registry.write_external_item("echo_demo", _ECHO_SKILL_SOURCE)
 
     info = registry.unregister("echo_demo")
 
@@ -111,7 +140,7 @@ def test_unregister_external_deletes_file_and_unloads(tmp_path: Path) -> None:
 
 
 def test_builtin_unregister_then_auto_recover_on_change(tmp_path: Path) -> None:
-    """内置 Skill 热卸载只注销不删文件；文件内容变更（mtime 变化）后自动恢复。"""
+    """内置技能热卸载只注销不删文件；文件内容变更（mtime 变化）后自动恢复。"""
     builtin, external = _make_dirs(tmp_path)
     skill_file = builtin / "echo_demo.py"
     skill_file.write_text(_ECHO_SKILL_SOURCE, encoding="utf-8")
@@ -140,7 +169,7 @@ def test_builtin_unregister_then_auto_recover_on_change(tmp_path: Path) -> None:
 def test_modified_external_skill_hot_reloads(tmp_path: Path) -> None:
     builtin, external = _make_dirs(tmp_path)
     registry = SkillRegistry(builtin_dir=builtin, extra_dir=external, watch=False)
-    registry.write_external_skill("echo_demo", _ECHO_SKILL_SOURCE)
+    registry.write_external_item("echo_demo", _ECHO_SKILL_SOURCE)
 
     time.sleep(0.01)
     renamed_source = _ECHO_SKILL_SOURCE.replace('name = "echo_demo"', 'name = "echo_v2"')

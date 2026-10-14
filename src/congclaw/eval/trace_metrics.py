@@ -71,7 +71,7 @@ def compute_metrics(trace: SessionTrace) -> TraceMetrics:
     _fill(values, _global_metrics(trace, events))
     if any(name.startswith("rag_") for name, _, _ in events):
         _fill(values, _rag_metrics(events))
-    if any(name.startswith(("agent_", "skill_")) for name, _, _ in events):
+    if any(name.startswith("agent_") for name, _, _ in events):
         _fill(values, _agent_metrics(events))
 
     return TraceMetrics(values=values)
@@ -213,13 +213,22 @@ def _agent_metrics(
 ) -> dict[str, float]:
     values: dict[str, float] = {}
 
-    results = [payload for name, payload, _ in events if name == "skill_result"]
+    # 遗留 planner 链路也发 tool_call/tool_result，带 node 字段，此处只取 Agent 子图事件
+    results = [
+        payload
+        for name, payload, _ in events
+        if name == "tool_result" and not payload.get("node")
+    ]
     if results:
         ok = sum(1 for payload in results if payload.get("ok"))
         _put(values, "agent_tool_calls", float(len(results)))
         _put(values, "agent_tool_success_rate", ok / len(results))
 
-    calls = [payload for name, payload, _ in events if name == "skill_call"]
+    calls = [
+        payload
+        for name, payload, _ in events
+        if name == "tool_call" and not payload.get("node")
+    ]
     thinkings = [payload for name, payload, _ in events if name == "agent_thinking"]
     if calls and thinkings:
         _put(values, "agent_calls_per_round", len(calls) / len(thinkings))

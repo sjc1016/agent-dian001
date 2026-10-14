@@ -33,10 +33,10 @@ class VerificationCheck(TypedDict, total=False):
 
 
 class ConfirmationRequest(TypedDict, total=False):
-    """写操作人工确认卡片（P4-16）。"""
+    """原子工具写操作人工确认卡片（P4-16）。"""
 
     approval_id: str
-    skill_name: str
+    tool_name: str
     args: dict[str, Any]
     summary: str
 
@@ -51,9 +51,18 @@ class AgentSubState(TypedDict, total=False):
     approval_mode: str  # inline / auto / deny
     pending_approval: dict[str, Any] | None  # 主图注入的上轮未决办理
     approval_resolution: str  # confirmed / cancelled / unknown
+    # 编排驱动：主图 intent_router 选中的编排型 Skill 与其槽位（非空则跳过 think）
+    skill_name: str
+    skill_slots: dict[str, Any]
 
     # ---- approval_entry ----
-    entry_decision: str  # think / act / cancel
+    entry_decision: str  # skill / think / act / cancel
+
+    # ---- skill_exec 编排执行 ----
+    skill_exec_decision: str  # think / reflect / finalize
+    orchestration: str  # skill=编排驱动；agent=LLM 自主规划
+    skill_result: dict[str, Any]
+    skill_steps: list[dict[str, Any]]
 
     # ---- think 思考 ----
     reasoning: str
@@ -80,4 +89,5 @@ class AgentSubState(TypedDict, total=False):
     fallback_reason: str
 
     # ---- 测试注入 ----
-    _registry: Any  # 测试通过 state 注入替身注册中心（生产取进程单例）
+    _tools: Any  # 测试注入的原子工具注册中心替身（生产取进程单例）
+    _skills: Any  # 测试注入的编排技能注册中心替身（生产取进程单例）

@@ -41,8 +41,8 @@ class SessionTrace:
     rag_finished: dict[str, Any] | None = None
     agent_start: dict[str, Any] | None = None
     agent_thinking: dict[str, Any] | None = None
-    skill_calls: list[dict[str, Any]] = field(default_factory=list)
-    skill_results: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
     agent_reflect: dict[str, Any] | None = None
     agent_answer: dict[str, Any] | None = None
     agent_fallback: dict[str, Any] | None = None
@@ -164,10 +164,11 @@ def _classify(trace: SessionTrace, record: dict[str, Any]) -> None:
         trace.agent_start = payload
     elif event_type == "agent_thinking":
         trace.agent_thinking = payload
-    elif event_type == "skill_call":
-        trace.skill_calls.append(payload)
-    elif event_type == "skill_result":
-        trace.skill_results.append(payload)
+    elif event_type == "tool_call" and not payload.get("node"):
+        # Agent 子图内的原子工具调用（遗留 planner 事件带 node 字段，不在此收集）
+        trace.tool_calls.append(payload)
+    elif event_type == "tool_result" and not payload.get("node"):
+        trace.tool_results.append(payload)
     elif event_type == "agent_reflect":
         trace.agent_reflect = payload
     elif event_type == "agent_answer":

@@ -41,8 +41,8 @@ EVAL_KEY_EVENT_TYPES = frozenset(
         "rag_finished",
         "agent_start",
         "agent_thinking",
-        "skill_call",
-        "skill_result",
+        "tool_call",
+        "tool_result",
         "agent_reflect",
         "agent_answer",
         "agent_fallback",
@@ -112,12 +112,14 @@ class TraceRecorder:
         if event_type == "tool_call":
             self.tool_calls += 1
         elif event_type == "tool_result":
+            # 两种形态：Agent 原子工具（顶层 ok），遗留 planner 工具（嵌套在 result 里）
             result = event.get("result")
-            if isinstance(result, dict):
-                if result.get("ok") is False:
-                    self.failed_tool_calls += 1
-                if result.get("requires_approval"):
-                    self.approval_count += 1
+            if not isinstance(result, dict):
+                result = event
+            if result.get("ok") is False:
+                self.failed_tool_calls += 1
+            if result.get("requires_approval"):
+                self.approval_count += 1
         elif event_type == "handoff":
             self.handoff_count += 1
         elif event_type == "checkpoint_saved":

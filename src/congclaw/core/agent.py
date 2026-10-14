@@ -30,9 +30,9 @@ from congclaw.core.session import (
 )
 from congclaw.core.state import RuntimeState
 from congclaw.core.trace import SessionTraceRecorder, TraceRecorder, normalize_trace_mode
+from congclaw.domain.business_store import DEFAULT_DEMO_PHONE
 from congclaw.graph.profile_store import aconsolidate_user_profile, aget_user_profile
 from congclaw.graph.workflow import build_complex_workflow, build_entry_workflow
-from congclaw.skills.business_store import DEFAULT_DEMO_PHONE
 
 
 def create_runtime(
@@ -209,7 +209,7 @@ async def _stream_session_events_native(
         mode=checkpoint_mode or os.getenv("CONG_CHECKPOINT_MODE", "light"),
         task=task or "",
     )
-    session = await aload_or_create_session(workspace)
+    session = await aload_or_create_session(workspace, phone)
     resumed = resume_workspace is not None
     started_event = session_started_event(workspace, session, resumed=resumed)
     await trace.record_event(started_event)

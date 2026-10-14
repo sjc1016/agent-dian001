@@ -102,6 +102,11 @@ def summarize_custom_event(event: dict[str, Any]) -> EventSummary:
         name = event.get("name", "tool")
         node = event.get("node", "agent")
         result = event.get("result")
+        if result is None:
+            # Agent 子图原子工具事件：结果字段在顶层（ok / error / preview）
+            result = {"ok": event.get("ok"), "preview": event.get("preview", "")}
+            if event.get("error"):
+                result["error"] = event["error"]
         ok = result.get("ok") if isinstance(result, dict) else None
         style = "green" if ok is not False else "red"
         return EventSummary(f"{node} · {name} result", _format_tool_result(result), "tool_result", style)
@@ -263,6 +268,8 @@ def _format_tool_result(result: Any) -> str:
         lines.append("stdout:\n" + shorten(result["stdout"], 500))
     if result.get("stderr"):
         lines.append("stderr:\n" + shorten(result["stderr"], 500))
+    if result.get("preview"):
+        lines.append("preview:\n" + shorten(result["preview"], 500))
     if "todos" in result:
         lines.append(f"todos: {len(result['todos'])} item(s)")
     return "\n".join(lines) or shorten(result, 700)

@@ -10,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy import func, or_, select
 
 from congclaw.core.checkpoint import workspace_manifest
+from congclaw.core.paths import phone_from_workspace
 from congclaw.db import SessionModel, session_scope
 from congclaw.db.engine import init_db
 
@@ -36,29 +37,35 @@ def session_summary_file(workspace: Path) -> Path:
     return workspace / SESSION_SUMMARY_FILE
 
 
-async def aload_or_create_session(workspace: Path) -> dict[str, Any]:
-    """阶段 4：会话加载/创建的原生 async 版本（HTTP/SSE 链路直接 await）。"""
+async def aload_or_create_session(workspace: Path, phone: str | None = None) -> dict[str, Any]:
+    """阶段 4：会话加载/创建的原生 async 版本（HTTP/SSE 链路直接 await）。
+
+    ``phone`` 为会话归属用户：优先取 ``workspace`` 路径中的 ``user-<phone>``
+    段（多用户工作区的唯一事实来源），无归属时用 ``phone`` 兜底，从而在
+    ``session`` 表中显式记录每条会话属于哪个用户。
+    """
     workspace.mkdir(parents=True, exist_ok=True)
     workspace_key = str(workspace)
     row = await _load_session_row(workspace_key)
     if row is not None:
         session = _row_to_session(row, workspace)
     else:
-        session = _normalize_session({}, workspace)
+        session = _normalize_session({}, workspace, phone)
         await _upsert_session_row(workspace_key, session)
     # 保留人读摘要文件，便于事件展示与调试（小文件写，卸载到线程避免阻塞循环）
     await asyncio.to_thread(_write_summary_file, workspace, session)
     return session
 
 
-def load_or_create_session(workspace: Path) -> dict[str, Any]:
-    return _run(aload_or_create_session(workspace))
+def load_or_create_session(workspace: Path, phone: str | None = None) -> dict[str, Any]:
+    return _run(aload_or_create_session(workspace, phone))
 
 
 async def alist_sessions(
     limit: int = 100,
     workspace_prefix: str | None = None,
     extra_prefixes: list[str] | None = None,
+    phones: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """列出历史会话（按更新时间倒序）。
 
@@ -67,12 +74,19 @@ async def alist_sessions(
 
     ``extra_prefixes`` 为额外的前缀集合（OR 语义），用于让默认用户同时看到
     多用户改造前遗留在 ``workspaces/workspace-*`` 下的未归属历史会话。
+
+    ``phones`` 为按 ``session.phone`` 显式归属过滤（OR 语义，优先于前缀过滤），
+    用于多用户隔离：传入当前用户号码即可只返回归属该用户的会话；默认用户可
+    额外带上空串，以纳管无 ``user-<phone>`` 归属的历史会话。
     """
     await _ensure_db()
     stmt = select(SessionModel)
-    prefixes = [prefix for prefix in [workspace_prefix, *(extra_prefixes or [])] if prefix]
-    if prefixes:
-        stmt = stmt.where(or_(*[_prefix_condition(prefix) for prefix in prefixes]))
+    if phones:
+        stmt = stmt.where(SessionModel.phone.in_([p for p in phones]))
+    else:
+        prefixes = [prefix for prefix in [workspace_prefix, *(extra_prefixes or [])] if prefix]
+        if prefixes:
+            stmt = stmt.where(or_(*[_prefix_condition(prefix) for prefix in prefixes]))
     stmt = stmt.order_by(SessionModel.updated_at.desc()).limit(limit)
     async with session_scope() as session:
         result = await session.execute(stmt)
@@ -93,8 +107,9 @@ def list_sessions(
     limit: int = 100,
     workspace_prefix: str | None = None,
     extra_prefixes: list[str] | None = None,
+    phones: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    return _run(alist_sessions(limit, workspace_prefix, extra_prefixes))
+    return _run(alist_sessions(limit, workspace_prefix, extra_prefixes, phones))
 
 
 def append_user_turn(session: dict[str, Any], content: str) -> int:
@@ -253,7 +268,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _normalize_session(raw: dict[str, Any], workspace: Path) -> dict[str, Any]:
+def _normalize_session(raw: dict[str, Any], workspace: Path, phone: str | None = None) -> dict[str, Any]:
     now = utc_now()
     session = dict(raw) if isinstance(raw, dict) else {}
     session.setdefault("version", 1)
@@ -278,6 +293,11 @@ def _normalize_session(raw: dict[str, Any], workspace: Path) -> dict[str, Any]:
     session["clarify_count"] = int(session.get("clarify_count") or 0)
     session["unknown_count"] = int(session.get("unknown_count") or 0)
     session["workspace"] = str(workspace)
+    # 归属用户：工作区路径里的 user-<phone> 为唯一事实来源，无归属时依次回退到
+    # 显式传入的 phone、会话中已记录的值
+    session["phone"] = (
+        phone_from_workspace(str(workspace)) or str(session.get("phone") or phone or "")
+    )
     session["turn_index"] = int(session.get("turn_index") or 0)
     session["summary"] = trim_text(str(session.get("summary", "")), MAX_SESSION_SUMMARY)
     return session
@@ -344,6 +364,7 @@ async def _upsert_session_row(workspace: str, data: dict[str, Any]) -> None:
             row = SessionModel(
                 session_id=str(data.get("session_id", "")),
                 workspace=workspace,
+                phone=str(data.get("phone", "")),
                 turn_index=int(data.get("turn_index", 0)),
                 last_route=str(data.get("last_route", "")),
                 last_task=str(data.get("last_task", "")),
@@ -359,6 +380,7 @@ async def _upsert_session_row(workspace: str, data: dict[str, Any]) -> None:
             session.add(row)
         else:
             existing.session_id = str(data.get("session_id", existing.session_id))
+            existing.phone = str(data.get("phone", existing.phone or ""))
             existing.turn_index = int(data.get("turn_index", existing.turn_index))
             existing.last_route = str(data.get("last_route", existing.last_route))
             existing.last_task = str(data.get("last_task", existing.last_task))
@@ -376,6 +398,7 @@ def _row_to_session_summary(row: SessionModel) -> dict[str, Any]:
     return {
         "session_id": row.session_id,
         "workspace": row.workspace,
+        "phone": row.phone or "",
         "turn_index": int(row.turn_index or 0),
         "last_route": row.last_route or "",
         "last_task": trim_text(str(row.last_task or ""), 120),
@@ -402,6 +425,7 @@ def _row_to_session(row: SessionModel, workspace: Path) -> dict[str, Any]:
         "version": 1,
         "session_id": row.session_id,
         "workspace": str(workspace),
+        "phone": row.phone or phone_from_workspace(str(workspace)),
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "turn_index": row.turn_index,
